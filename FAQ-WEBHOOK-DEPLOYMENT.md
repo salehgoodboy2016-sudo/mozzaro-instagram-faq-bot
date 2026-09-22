@@ -1,7 +1,7 @@
 # Instagram FAQ Webhook
 
 The service is intentionally disabled by default. Set `INSTAGRAM_AUTO_REPLY_ENABLED=false` until the webhook and test results have been reviewed.
-Story mention handling is also review-only by default. Set `INSTAGRAM_MENTION_REPOST_ENABLED=false`.
+Story processing is disabled by default. Set `INSTAGRAM_MENTION_REVIEW_ENABLED=false` and `INSTAGRAM_MENTION_REPOST_ENABLED=false` until setup is complete. Publishing is not implemented.
 
 ## Required server environment variables
 
@@ -26,12 +26,18 @@ Deploy the repository as a Docker web service. The service listens on `PORT` and
 - `GET /webhooks/instagram` for Meta verification
 - `POST /webhooks/instagram` for incoming Instagram events
 
-When a `mentions` change or Story attachment is received, the service writes a
-deduplicated record to `data/story-mention-review.jsonl`. The official Meta API
-does not provide a supported way to download another user's Story media and
-repost it automatically, so this workflow intentionally stops at manual review.
+When review is enabled, explicit Story mention events are recorded in
+`data/story-mention-review.jsonl`. Media availability and the supported publishing
+workflow still need verification against official documentation and a real event.
+Do not treat ordinary feed mentions or Story replies as Story mentions.
 It does not scrape Instagram or use password automation. The included sample
-is at `output/story/mozzaro-story-sample.png`.
+at `output/story/mozzaro-story-sample.png` is an AI-generated visual draft, not
+output of an implemented template compositor.
+
+POST requests fail closed with HTTP 503 when the app secret is missing and
+HTTP 401 for invalid or missing signatures. Health status does not establish
+that Meta is connected. Render Free has ephemeral storage and sleeps when
+idle; durable queue/state storage is required before production activation.
 
 In Meta's Instagram Webhooks configuration, use the deployed HTTPS URL plus `/webhooks/instagram`, and the same verify token stored in the server environment. Subscribe to the Instagram messaging event. Keep automatic replies disabled while testing.
 

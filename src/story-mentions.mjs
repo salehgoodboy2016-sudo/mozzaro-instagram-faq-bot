@@ -9,7 +9,7 @@ export function extractStoryMentions(payload, accountId = '') {
   const found = [];
   for (const entry of payload?.entry || []) {
     for (const change of entry.changes || []) {
-      if (change.field !== 'mentions') continue;
+      if (change.field !== 'mentions' || change.value?.media_type !== 'STORY') continue;
       const value = change.value || {};
       found.push({
         id: value.id || value.media_id || value.story_id || `${entry.id || 'instagram'}:${value.timestamp || Date.now()}`,
@@ -25,8 +25,8 @@ export function extractStoryMentions(payload, accountId = '') {
     }
     for (const item of entry.messaging || entry.messages || []) {
       const message = item.message || item;
-      const attachment = (message.attachments || []).find((a) => /story/i.test(a.type || a.payload?.type || '') || a.payload?.story);
-      if (!attachment) continue;
+      const attachment = (message.attachments || []).find((a) => a.type === 'story_mention');
+      if (!attachment || message.is_echo || !accountId || item.sender?.id === accountId || item.recipient?.id !== accountId) continue;
       const payloadValue = attachment.payload || {};
       found.push({
         id: message.mid || item.message_id || item.id,
@@ -64,8 +64,8 @@ export async function queueStoryMention(mention, file = './data/story-mention-re
     mediaType: mention.mediaType,
     source: mention.source,
     status: 'manual_review_required',
-    autoRepostSupported: false,
-    reason: 'The official API does not provide a supported download/repost flow for another user\'s Story media.',
+    autoRepostSupported: null,
+    reason: 'Media availability and publishing support require verification; review only.',
     at: new Date().toISOString(),
   };
   await appendFile(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });

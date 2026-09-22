@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createWebhookServer, extractEvents } from '../src/webhook-server.mjs';
+import { createWebhookServer, extractEvents, isIncoming } from '../src/webhook-server.mjs';
+import { createHmac } from 'node:crypto';
 
 test('webhook event extraction keeps sender and ignores no content', () => {
   const events = extractEvents({ entry: [{ messaging: [
@@ -29,11 +30,33 @@ test('webhook rejects wrong verification token', async (t) => {
 });
 
 test('webhook acknowledges incoming messages while auto replies are disabled', async (t) => {
-  const server = createWebhookServer({ verifyToken: 'test-token', enabled: false, appSecret: '' });
+  const server = createWebhookServer({ verifyToken: 'test-token', enabled: false, appSecret: 'test-secret' });
   await new Promise((resolve) => server.listen(0, resolve)); t.after(() => server.close());
   const response = await fetch(`http://127.0.0.1:${server.address().port}/webhooks/instagram`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ object: 'instagram', entry: [{ messaging: [{ sender: { id: 'customer-1' }, recipient: { id: 'business-1' }, message: { mid: `test-${Date.now()}`, text: 'هلا' } }] }] }),
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=' + createHmac('sha256', 'test-secret').update('{"object":"instagram","entry":[]}').digest('hex') },
+    body: '{"object":"instagram","entry":[]}',
   });
   assert.equal(response.status, 200); assert.deepEqual(await response.json(), { received: true });
+});
+
+test('only incoming messages addressed to the configured business are accepted', () => {
+  const event = { id: 'm', senderId: 'customer', recipientId: 'business' };
+  assert.equal(isIncoming(event, 'business'), true);
+  assert.equal(isIncoming({ ...event, isEcho: true }, 'business'), false);
+  assert.equal(isIncoming({ ...event, senderId: 'business' }, 'business'), false);
+  assert.equal(isIncoming({ ...event, recipientId: 'other' }, 'business'), false);
+  assert.equal(isIncoming(event, ''), false);
+});
+
+test('rejects unsigned, forged and malformed signatures; fails closed without secret', async (t) => {
+  for (const secret of ['', 'test-secret']) {
+    const server = createWebhookServer({ appSecret: secret });
+    await new Promise(resolve => server.listen(0, resolve)); t.after(() => server.close());
+    for (const signature of ['', 'sha256=' + '0'.repeat(64), 'sha256=bad']) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/webhooks/instagram`, {
+        method: 'POST', headers: { 'x-hub-signature-256': signature }, body: '{}',
+      });
+      assert.equal(response.status, secret ? 401 : 503);
+    }
+  }
 });

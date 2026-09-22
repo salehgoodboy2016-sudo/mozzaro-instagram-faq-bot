@@ -13,8 +13,8 @@ import { extractStoryMentions, queueStoryMention } from './story-mentions.mjs';
 // Deployment providers inject secrets through process.env. Merge the local
 // .env file for development without ever requiring that file in production.
 const env = {
-  ...process.env,
   ...parseEnv(await readFile(new URL('../.env', import.meta.url), 'utf8').catch(() => '')),
+  ...process.env,
 };
 const config = {
   port: Number(env.PORT || 3000),
@@ -27,16 +27,16 @@ const config = {
   repeatCooldownMs: Number(env.INSTAGRAM_REPEAT_COOLDOWN_MS || 21600000),
   mentionReviewFile: env.INSTAGRAM_MENTION_REVIEW_FILE || './data/story-mention-review.jsonl',
   mentionRepostEnabled: env.INSTAGRAM_MENTION_REPOST_ENABLED === 'true',
+  mentionReviewEnabled: env.INSTAGRAM_MENTION_REVIEW_ENABLED === 'true',
 };
 const store = new StateStore(config.stateFile, config.repeatCooldownMs);
 await store.load();
 const client = config.accessToken ? new InstagramClient({ token: config.accessToken, accountId: config.accountId }) : null;
 const inflight = new Set();
 
-function verifySignature(raw, signature) {
-  if (!config.appSecret) return true;
-  if (!signature?.startsWith('sha256=')) return false;
-  const expected = createHmac('sha256', config.appSecret).update(raw).digest('hex');
+function verifySignature(raw, signature, appSecret) {
+  if (!appSecret || typeof signature !== 'string' || !/^sha256=[a-f0-9]{64}$/.test(signature)) return false;
+  const expected = createHmac('sha256', appSecret).update(raw).digest('hex');
   const actual = signature.slice(7);
   return actual.length === expected.length && timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
 }
@@ -67,8 +67,12 @@ async function flagHuman(event, reason) {
   await appendFile('./data/human-attention.jsonl', `${JSON.stringify({ messageId: event.id, senderId: event.senderId, reason, at: new Date().toISOString() })}\n`, { mode: 0o600 });
 }
 
+export function isIncoming(event, accountId) {
+  return Boolean(accountId && event.id && event.senderId && !event.isEcho && event.senderId !== accountId && event.recipientId === accountId);
+}
+
 async function processEvent(event) {
-  if (!event.id || !event.senderId || event.isEcho || event.senderId === config.accountId || event.recipientId === config.accountId) return { skipped: 'echo-or-invalid' };
+  if (!isIncoming(event, config.accountId)) return { skipped: 'echo-or-invalid' };
   if (store.hasProcessed(event.id) || inflight.has(event.id)) return { skipped: 'duplicate' };
   inflight.add(event.id);
   try {
@@ -95,18 +99,20 @@ export function createWebhookServer(overrides = {}) {
     }
     if (req.method === 'GET' && req.url?.startsWith('/webhooks/instagram')) {
       const url = new URL(req.url, 'http://localhost');
-      const valid = url.searchParams.get('hub.verify_token') === handlerConfig.verifyToken;
+      const valid = Boolean(handlerConfig.verifyToken) && url.searchParams.get('hub.mode') === 'subscribe' && Boolean(url.searchParams.get('hub.challenge')) && url.searchParams.get('hub.verify_token') === handlerConfig.verifyToken;
       res.writeHead(valid ? 200 : 403, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end(valid ? (url.searchParams.get('hub.challenge') || '') : 'Forbidden'); return;
     }
     if (req.method !== 'POST' || !req.url?.startsWith('/webhooks/instagram')) { res.writeHead(404); res.end('Not found'); return; }
-    const chunks = []; for await (const chunk of req) chunks.push(chunk); const raw = Buffer.concat(chunks);
-    if (!verifySignature(raw, req.headers['x-hub-signature-256'])) { res.writeHead(401); res.end('Invalid signature'); return; }
+    if (!handlerConfig.appSecret) { res.writeHead(503); res.end('Webhook not configured'); return; }
+    const chunks = []; let size = 0;
+    for await (const chunk of req) { size += chunk.length; if (size > 1024 * 1024) { res.writeHead(413); res.end('Payload too large'); return; } chunks.push(chunk); }
+    const raw = Buffer.concat(chunks);
+    if (!verifySignature(raw, req.headers['x-hub-signature-256'], handlerConfig.appSecret)) { res.writeHead(401); res.end('Invalid signature'); return; }
     let payload; try { payload = JSON.parse(raw.toString('utf8')); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
     res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ received: true }));
-    // Story reposting is deliberately review-only: the official API does not
-    // expose a supported download/repost flow for another user's Story.
-    for (const mention of extractStoryMentions(payload, handlerConfig.accountId)) {
+    // Review is independent of DM replies. Publishing is not implemented.
+    for (const mention of handlerConfig.mentionReviewEnabled ? extractStoryMentions(payload, handlerConfig.accountId) : []) {
       queueStoryMention(mention, handlerConfig.mentionReviewFile).catch((error) => console.error(JSON.stringify({ mentionError: error.message })));
     }
     for (const event of extractEvents(payload)) processEvent(event).catch((error) => console.error(JSON.stringify({ webhookError: error.message, status: error.details?.status ?? null })));
