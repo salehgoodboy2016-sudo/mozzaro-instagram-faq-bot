@@ -104,10 +104,10 @@ export function createWebhookServer(overrides = {}) {
     if (!verifySignature(raw, req.headers['x-hub-signature-256'])) { res.writeHead(401); res.end('Invalid signature'); return; }
     let payload; try { payload = JSON.parse(raw.toString('utf8')); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
     res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ received: true }));
+    // Story reposting is deliberately review-only: the official API does not
+    // expose a supported download/repost flow for another user's Story.
     for (const mention of extractStoryMentions(payload, handlerConfig.accountId)) {
-      if (!handlerConfig.mentionRepostEnabled) {
-        queueStoryMention(mention, handlerConfig.mentionReviewFile).catch((error) => console.error(JSON.stringify({ mentionError: error.message })));
-      }
+      queueStoryMention(mention, handlerConfig.mentionReviewFile).catch((error) => console.error(JSON.stringify({ mentionError: error.message })));
     }
     for (const event of extractEvents(payload)) processEvent(event).catch((error) => console.error(JSON.stringify({ webhookError: error.message, status: error.details?.status ?? null })));
   });
