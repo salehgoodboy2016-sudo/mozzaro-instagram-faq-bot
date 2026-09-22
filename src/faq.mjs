@@ -1,5 +1,6 @@
 const TOPICS = Object.freeze({
   suppliers: 'suppliers',
+  localChicken: 'localChicken',
   hours: 'hours',
   catering: 'catering',
   orders: 'orders',
@@ -7,6 +8,7 @@ const TOPICS = Object.freeze({
 
 const ANSWERS = Object.freeze({
   suppliers: 'الدجاج عندنا من ساديا، والبيبروني من أمريكانا. أي خدمة ثانية؟',
+  localChicken: 'الدجاج عندنا محلي ومن ساديا، والبيبروني من أمريكانا. أي خدمة ثانية؟',
   hours: 'ساعات العمل في موزارو من 12 ظهرًا إلى 3 صباحًا، جميع أيام الأسبوع. أي خدمة ثانية؟',
   catering: 'لتفاصيل الكيترنق، تفضلوا بالتواصل على الواتساب: 0545383080',
   orders: 'للطلبات، اتصلوا على الرقم التالي ويرد عليكم الكاشير: 0565017314',
@@ -46,7 +48,10 @@ export function classifyFaq(rawText) {
   ]);
 
   const topics = [];
-  if (hasAny(text, ['دجاج', 'لحم', 'لحوم', 'بيبروني', 'بيبرون', 'ببروني', 'pepperoni', 'مصدر الدجاج', 'المورد', 'مورّد', 'من وين الدجاج'])) topics.push(TOPICS.suppliers);
+  const asksAboutLocalChicken = hasAny(text, ['دجاج', 'chicken'])
+    && hasAny(text, ['محلي', 'بلدي', 'مستورد', 'من داخل السعودية', 'سعودي']);
+  if (asksAboutLocalChicken) topics.push(TOPICS.localChicken);
+  else if (hasAny(text, ['دجاج', 'لحم', 'لحوم', 'بيبروني', 'بيبرون', 'ببروني', 'pepperoni', 'مصدر الدجاج', 'المورد', 'مورّد', 'من وين الدجاج'])) topics.push(TOPICS.suppliers);
   if (hasAny(text, ['ساعات العمل', 'مواعيد العمل', 'اوقات الافتتاح', 'وقت الافتتاح', 'مواعيد الفتح', 'اوقات الفتح', 'متى الدوام', 'دوام', 'تفتح', 'يفتح', 'فاتحين', 'مفتوح', 'مفتوحه', 'تقفل', 'يغلق', 'تسكر', 'متى تفتح', 'متى تقفل', 'متى تسكر', 'الان مفتوح', 'الحين مفتوح'])) topics.push(TOPICS.hours);
   if (hasAny(text, ['كيترنق', 'كيترينج', 'كاترينج', 'كيتيرنق', 'كتيرنق', 'catering', 'بوفيه', 'ضيافه', 'ضيافة', 'حجز مناسبه', 'حجز مناسبة'])) topics.push(TOPICS.catering);
   if (hasAny(text, ['طلب', 'اطلب', 'اوردر', 'order', 'ابي اطلب', 'أبي أطلب', 'ابغى اطلب', 'اقدم طلب', 'جهزوا لي', 'تجهيز الطلب', 'طلب مسبق', 'مسبق', 'كيف اطلب', 'توصيل'])) topics.push(TOPICS.orders);

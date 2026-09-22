@@ -5,6 +5,11 @@ import { composeReply, classifyFaq } from '../src/faq.mjs';
 test('Islamic greeting', () => assert.equal(composeReply('السلام عليكم').reply, 'وعليكم السلام ورحمة الله وبركاته'));
 test('casual greeting with spelling variation', () => assert.equal(composeReply('اهلاا').reply, 'أهلين'));
 test('supplier question in Saudi Arabic', () => assert.match(composeReply('من وين الدجاج والبيبروني؟').reply, /ساديا.*أمريكانا/));
+test('local chicken question gets the local supplier answer', () => {
+  const result = composeReply('هل الدجاج محلي ولا مستورد؟');
+  assert.match(result.reply, /الدجاج عندنا محلي ومن ساديا/);
+  assert.deepEqual(result.topics, ['localChicken']);
+});
 test('hours question', () => assert.match(composeReply('متى تقفلون؟').reply, /12 ظهرًا إلى 3 صباحًا/));
 test('opening hours phrasing used by customer', () => assert.match(composeReply('متى أوقات الافتتاح؟').reply, /12 ظهرًا إلى 3 صباحًا/));
 test('open now uses Riyadh time', () => {
