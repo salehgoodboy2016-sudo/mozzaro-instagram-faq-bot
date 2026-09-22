@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: mozzaro-instagram-faq
+    env: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: false
