@@ -6,6 +6,7 @@ test('Islamic greeting', () => assert.equal(composeReply('السلام عليك�
 test('casual greeting with spelling variation', () => assert.equal(composeReply('اهلاا').reply, 'أهلين'));
 test('supplier question in Saudi Arabic', () => assert.match(composeReply('من وين الدجاج والبيبروني؟').reply, /ساديا.*أمريكانا/));
 test('hours question', () => assert.match(composeReply('متى تقفلون؟').reply, /12 ظهرًا إلى 3 صباحًا/));
+test('opening hours phrasing used by customer', () => assert.match(composeReply('متى أوقات الافتتاح؟').reply, /12 ظهرًا إلى 3 صباحًا/));
 test('open now uses Riyadh time', () => {
   const open = composeReply('هل أنتم مفتوحين الآن؟', new Date('2026-09-22T22:00:00Z'));
   const closed = composeReply('هل أنتم مفتوحين الآن؟', new Date('2026-09-22T04:00:00Z'));
