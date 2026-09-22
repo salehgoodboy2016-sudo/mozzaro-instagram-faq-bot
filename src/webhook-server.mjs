@@ -10,7 +10,12 @@ import { StateStore } from './state-store.mjs';
 import { InstagramClient } from './instagram-client.mjs';
 import { extractStoryMentions, queueStoryMention } from './story-mentions.mjs';
 
-const env = parseEnv(await readFile(new URL('../.env', import.meta.url), 'utf8').catch(() => ''));
+// Deployment providers inject secrets through process.env. Merge the local
+// .env file for development without ever requiring that file in production.
+const env = {
+  ...process.env,
+  ...parseEnv(await readFile(new URL('../.env', import.meta.url), 'utf8').catch(() => '')),
+};
 const config = {
   port: Number(env.PORT || 3000),
   verifyToken: env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || '',
