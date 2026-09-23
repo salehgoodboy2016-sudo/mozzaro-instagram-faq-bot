@@ -35,16 +35,22 @@ export function extractWhatsAppEvents(payload) {
   return events;
 }
 
+function normalizeIdentity(value) {
+  const text = String(value || '').trim().replace(/[()\s-]/g, '');
+  return /^\+?\d+$/.test(text) ? text.replace(/^\+/, '') : text;
+}
+
 export class WhatsAppService {
-  constructor({ store = null, client = null, enabled = false, phoneNumberId, coexistenceVerified = false, now = () => new Date() }) {
+  constructor({ store = null, client = null, enabled = false, phoneNumberId, coexistenceVerified = false, allowlist = [], now = () => new Date() }) {
     this.store = store;
     this.client = client;
     this.enabled = enabled;
     this.phoneNumberId = phoneNumberId;
     this.coexistenceVerified = coexistenceVerified;
+    this.allowlist = new Set(allowlist.map(normalizeIdentity).filter(Boolean));
     this.now = now;
-    if (enabled && (!store || !client || !coexistenceVerified || !phoneNumberId)) {
-      throw new Error('WhatsApp automation requires a persistent store, outbound transport, verified Coexistence, and phone ID');
+    if (enabled && (!store || !client || !coexistenceVerified || !phoneNumberId || !this.allowlist.size)) {
+      throw new Error('WhatsApp automation requires a persistent store, outbound transport, verified Coexistence, phone ID, and a non-empty test allowlist');
     }
   }
 
@@ -83,6 +89,10 @@ export class WhatsAppService {
     const conversationId = this.store.conversationId(event.phoneId, event.sender);
     const inserted = await this.store.recordEvent({ id: event.id, conversationId, type: 'incoming', at: event.at });
     if (!inserted) return 'duplicate';
+    if (this.enabled && !this.allowlist.has(normalizeIdentity(event.sender))) {
+      await this.store.setOutcome(event.id, 'allowlist_blocked');
+      return 'allowlist_blocked';
+    }
     const conversation = await this.store.getConversation(conversationId);
     if (conversation?.last_employee_at && event.at <= new Date(conversation.last_employee_at)) {
       await this.store.setOutcome(event.id, 'before_employee_activity');

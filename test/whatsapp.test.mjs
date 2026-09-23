@@ -80,10 +80,23 @@ test('persistent event IDs suppress retries and automation defaults off', async 
   assert.equal(client.sent.length, 0);
 });
 
+test('enabled automation requires and enforces a strict test allowlist', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  assert.throws(() => new WhatsAppService({ store, client, phoneNumberId: phoneId,
+    enabled: true, coexistenceVerified: true }), /non-empty test allowlist/);
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowlist: ['+966500000001'], now: () => now });
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'blocked', '1790190000'))).outcomes, { sent: 1 });
+  const blocked = sample('متى تفتحون؟', 'non-allowlisted', '1790190000');
+  blocked.entry[0].changes[0].value.messages[0].from = '966500000002';
+  assert.deepEqual((await service.process(blocked)).outcomes, { allowlist_blocked: 1 });
+  assert.equal(client.sent.length, 1);
+});
+
 test('human takeover suppresses replies and can be resumed', async () => {
   const store = new MemoryStore(), client = new MockWhatsAppClient();
   const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
-    coexistenceVerified: true, now: () => now });
+    coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   const id = store.conversationId(phoneId, '966500000001');
   await service.handoff(id, true);
   assert.deepEqual((await service.process(sample('متى تفتحون؟', 'human-1'))).outcomes, { human_active: 1 });
@@ -95,7 +108,7 @@ test('human takeover suppresses replies and can be resumed', async () => {
 test('unknown question gets one safe fallback and persistent handoff', async () => {
   const store = new MemoryStore(), client = new MockWhatsAppClient();
   const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
-    coexistenceVerified: true, now: () => now });
+    coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   assert.deepEqual((await service.process(sample('هل عندكم خصومات اليوم؟', 'unknown-1'))).outcomes, { handoff_reply_sent: 1 });
   assert.deepEqual((await service.process(sample('وش أسعاركم؟', 'unknown-2'))).outcomes, { human_active: 1 });
   assert.equal(client.sent.length, 1);
@@ -104,7 +117,7 @@ test('unknown question gets one safe fallback and persistent handoff', async () 
 test('late customer event after employee activity does not receive a reply', async () => {
   const store = new MemoryStore(), client = new MockWhatsAppClient();
   const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
-    coexistenceVerified: true, now: () => now });
+    coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   await store.recordEmployeeActivity(store.conversationId(phoneId, '966500000001'), new Date('2026-09-23T18:00:00Z'));
   assert.deepEqual((await service.process(sample('متى تفتحون؟', 'late', '1790180000'))).outcomes, { before_employee_activity: 1 });
   assert.equal(client.sent.length, 0);
@@ -113,7 +126,7 @@ test('late customer event after employee activity does not receive a reply', asy
 test('official Coexistence message echo activates human handoff without replying', async () => {
   const store = new MemoryStore(), client = new MockWhatsAppClient();
   const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
-    coexistenceVerified: true, now: () => now });
+    coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   const echo = { entry: [{ changes: [{ field: 'smb_message_echoes', value: {
     metadata: { phone_number_id: phoneId }, message_echoes: [{
       id: 'wamid.employee', to: '966500000001', from: '966565017314', timestamp: '1790190000',

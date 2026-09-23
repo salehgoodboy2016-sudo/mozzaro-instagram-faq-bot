@@ -52,6 +52,7 @@ const config = {
   kapsoApiVersion: env.KAPSO_WHATSAPP_API_VERSION || 'v24.0',
   kapsoCoexistenceVerified: env.KAPSO_COEXISTENCE_VERIFIED === 'true',
   kapsoEmployeeEchoVerified: env.KAPSO_EMPLOYEE_ECHO_VERIFIED === 'true',
+  whatsappAutomationAllowlist: String(env.WHATSAPP_AUTOMATION_ALLOWLIST || '').split(',').map((value) => value.trim()).filter(Boolean),
   kapsoEnabled: env.WHATSAPP_AUTOMATION_ENABLED === 'true'
     && env.KAPSO_AUTO_REPLY_ENABLED === 'true'
     && env.KAPSO_LIVE_SEND_APPROVED === 'true',
@@ -352,12 +353,12 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     phoneNumberId: config.whatsappPhoneNumberId, enabled: config.whatsappEnabled && config.whatsappCoexistenceVerified });
   const whatsappService = new WhatsAppService({ store: whatsappStore, client: whatsappClient,
     enabled: config.whatsappEnabled, coexistenceVerified: config.whatsappCoexistenceVerified,
-    phoneNumberId: config.whatsappPhoneNumberId });
+    phoneNumberId: config.whatsappPhoneNumberId, allowlist: config.whatsappAutomationAllowlist });
   const kapsoClient = new KapsoClient({ apiKey: config.kapsoApiKey, phoneNumberId: config.kapsoPhoneNumberId,
     apiVersion: config.kapsoApiVersion, enabled: config.kapsoEnabled && config.kapsoCoexistenceVerified });
   const kapsoService = new WhatsAppService({ store: whatsappStore, client: kapsoClient,
     enabled: config.kapsoEnabled, coexistenceVerified: config.kapsoCoexistenceVerified,
-    phoneNumberId: config.kapsoPhoneNumberId });
+    phoneNumberId: config.kapsoPhoneNumberId, allowlist: config.whatsappAutomationAllowlist });
   const server = createWebhookServer({ whatsappService, kapsoService });
   server.listen(config.port, () => {
     console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,
