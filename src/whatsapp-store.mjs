@@ -86,5 +86,20 @@ export class WhatsAppStore {
     return result.rows;
   }
 
+  async verifyPersistence() {
+    const eventId = 'system:storage-self-test-v1';
+    const conversationId = this.conversationId('system', 'storage-self-test-v1');
+    await this.recordEvent({ id: eventId, conversationId, type: 'self_test', at: new Date() });
+    const duplicateRejected = !await this.recordEvent({
+      id: eventId, conversationId, type: 'self_test', at: new Date(),
+    });
+    await this.setHuman(conversationId, true, 'storage_self_test');
+    const handoffStored = (await this.getConversation(conversationId))?.human_active === true;
+    await this.setHuman(conversationId, false, null);
+    await this.setOutcome(eventId, 'storage_self_test_passed');
+    if (!duplicateRejected || !handoffStored) throw new Error('WhatsApp persistent storage self-test failed');
+    return { deduplication: true, humanHandoff: true };
+  }
+
   async close() { await this.pool.end(); }
 }

@@ -30,6 +30,10 @@ test('PostgreSQL migrations are repeatable and persist deduplication and handoff
   assert.equal(persisted.human_active, true);
   assert.equal(persisted.handoff_reason, 'employee_takeover');
   assert.equal((await secondStore.recent(10))[0].outcome, 'received');
+  assert.deepEqual(await secondStore.verifyPersistence(), { deduplication: true, humanHandoff: true });
+  assert.equal((await secondStore.getConversation(
+    secondStore.conversationId('system', 'storage-self-test-v1'),
+  )).human_active, false);
 
   await pool.end();
 });

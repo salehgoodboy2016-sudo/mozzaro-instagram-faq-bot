@@ -272,7 +272,9 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     ? new WhatsAppStore({ databaseUrl: config.whatsappDatabaseUrl, identityKey: config.whatsappIdentityKey }) : null;
   if (whatsappStore) {
     const appliedMigrations = await whatsappStore.initialize();
-    console.log(JSON.stringify({ service: 'whatsapp-database', status: 'ready', appliedCount: appliedMigrations.length }));
+    const storageTest = await whatsappStore.verifyPersistence();
+    console.log(JSON.stringify({ service: 'whatsapp-database', status: 'ready',
+      appliedCount: appliedMigrations.length, ...storageTest }));
   }
   const whatsappClient = new WhatsAppClient({ token: config.whatsappAccessToken,
     phoneNumberId: config.whatsappPhoneNumberId, enabled: config.whatsappEnabled && config.whatsappCoexistenceVerified });
