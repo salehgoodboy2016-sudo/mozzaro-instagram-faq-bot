@@ -9,5 +9,10 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
   localChickenText: 'الدجاج عندنا محلي ومن ساديا، والبيبروني من أمريكانا.',
   cateringText: 'لتفاصيل الكيترنق، تفضلوا بالتواصل على الواتساب: 0545383080',
   ordersText: 'للطلبات، اتصلوا على الرقم التالي ويرد عليكم الكاشير: 0565017314',
+  menuItems: [], // Add only after Mozzaro verifies each item and price.
+  ingredientsAndAllergens: [], // No ingredient/allergen claim is approved yet.
+  policies: [], // Add only policies confirmed by Mozzaro management.
+  orderContact: '0565017314',
+  cateringContact: '0545383080',
   unknownHandoffText: 'شكرًا لتواصلك مع موزارو. بنحوّل استفسارك للفريق للمتابعة.',
 });

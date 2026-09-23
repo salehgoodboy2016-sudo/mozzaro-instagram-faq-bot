@@ -1,4 +1,4 @@
-import { planWhatsAppReply } from './whatsapp-faq.mjs';
+import { planWhatsAppReply, renderApprovedTopics } from './whatsapp-faq.mjs';
 
 export function extractWhatsAppEvents(payload) {
   const events = [];
@@ -41,9 +41,13 @@ function normalizeIdentity(value) {
 }
 
 export class WhatsAppService {
-  constructor({ store = null, client = null, enabled = false, phoneNumberId, coexistenceVerified = false, allowlist = [], now = () => new Date() }) {
+  constructor({ store = null, client = null, aiClient = null, aiMonthlyLimitUsd = 0,
+    knowledge = null, enabled = false, phoneNumberId, coexistenceVerified = false, allowlist = [], now = () => new Date() }) {
     this.store = store;
     this.client = client;
+    this.aiClient = aiClient;
+    this.aiMonthlyLimitUsd = aiMonthlyLimitUsd;
+    this.knowledge = knowledge;
     this.enabled = enabled;
     this.phoneNumberId = phoneNumberId;
     this.coexistenceVerified = coexistenceVerified;
@@ -107,7 +111,46 @@ export class WhatsAppService {
       await this.store.setOutcome(event.id, 'human_active');
       return 'human_active';
     }
-    const plan = planWhatsAppReply(event.text, this.now());
+    let plan = planWhatsAppReply(event.text, this.now());
+    let aiContext = [];
+    if (this.enabled && this.aiClient?.enabled && (!plan.requiresHuman || plan.reason === 'unknown_question') && this.knowledge) {
+      aiContext = await this.store.getAiContext?.(conversationId) || [];
+      if (event.text.length > 2500) {
+        await this.store.claimHumanHandoff(conversationId, 'message_too_long');
+        await this.store.setOutcome(event.id, 'human_required');
+        return 'human_required';
+      }
+      const estimateUsd = this.aiClient.estimateUsd([...aiContext, { role: 'user', content: event.text }], 220, this.knowledge);
+      const reserved = await this.store.reserveAiBudget?.(event.id, estimateUsd, this.aiMonthlyLimitUsd);
+      if (!reserved) {
+        await this.store.claimHumanHandoff(conversationId, 'ai_budget_exceeded');
+        await this.store.setOutcome(event.id, 'ai_budget_exceeded');
+        return 'ai_budget_exceeded';
+      }
+      try {
+        const ai = await this.aiClient.answer({ userText: event.text, context: aiContext, knowledge: this.knowledge });
+        const actualUsd = ai.inputTokens * this.aiClient.inputUsdPerMillion / 1_000_000
+          + ai.outputTokens * this.aiClient.outputUsdPerMillion / 1_000_000;
+        await this.store.recordAiUsage?.(event.id, actualUsd);
+        console.log(JSON.stringify({ service: 'claude-assistant', outcome: 'completed', inputTokens: ai.inputTokens,
+          outputTokens: ai.outputTokens, estimatedCostUsd: Number(actualUsd.toFixed(6)) }));
+        if (ai.action === 'handoff') {
+          await this.store.claimHumanHandoff(conversationId, 'ai_handoff');
+          await this.store.setOutcome(event.id, 'human_required');
+          return 'human_required';
+        }
+        const approvedPlan = renderApprovedTopics(ai.topics, this.now());
+        if (!approvedPlan) {
+          await this.store.claimHumanHandoff(conversationId, 'ai_no_verified_answer');
+          await this.store.setOutcome(event.id, 'human_required');
+          return 'human_required';
+        }
+        plan = approvedPlan;
+      } catch (error) {
+        await this.store.setOutcome(event.id, 'ai_unavailable');
+        console.error(JSON.stringify({ service: 'claude-assistant', outcome: 'unavailable', status: error.status ?? null, code: error.code ?? null }));
+      }
+    }
     if (plan.requiresHuman) {
       const firstHandoff = await this.store.claimHumanHandoff(conversationId, plan.reason);
       if (plan.reason !== 'unknown_question' || !firstHandoff || !this.enabled ||
@@ -142,6 +185,7 @@ export class WhatsAppService {
       // A reserved send is never automatically retried. A timeout after Meta
       // accepts the request is ambiguous and retrying could duplicate a reply.
       await this.client.sendText({ to: event.sender, text: plan.reply, customerMessageAt: event.at, now: this.now() });
+      if (this.aiClient?.enabled) await this.store.appendAiContext?.(conversationId, event.text, plan.reply);
       await this.store.setOutcome(event.id, 'sent');
       return 'sent';
     } catch (error) {

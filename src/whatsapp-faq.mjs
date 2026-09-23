@@ -29,6 +29,9 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     'complaint', 'wrong order', 'missing item', 'late delivery', 'حساسيه', 'حساس',
   ]);
   if (complaint) return { reply: null, topics: [], requiresHuman: true, reason: 'complaint' };
+  if (includes(text, ['موظف', 'موظفه', 'اكلم احد', 'اكلم شخص', 'ابي اكلم', 'ابغى اكلم', 'كلموني', 'طلب معقد', 'تعديل على الطلب'])) {
+    return { reply: null, topics: [], requiresHuman: true, reason: 'human_request' };
+  }
 
   const topics = [];
   if (includes(text, ['دجاج', 'لحم', 'لحوم', 'مصدر', 'مورد', 'بيبروني', 'ببروني', 'pepperoni', 'chicken', 'meat'])) topics.push('suppliers');
@@ -53,6 +56,18 @@ export function planWhatsAppReply(rawText, now = new Date()) {
   }
   if (topics.some((topic) => topic === 'suppliers' || topic === 'hours')) parts.push('أي خدمة ثانية؟');
   return { reply: parts.join(' '), topics, requiresHuman: false };
+}
+
+export function renderApprovedTopics(topics, now = new Date()) {
+  const allowed = new Set(['suppliers', 'hours', 'catering', 'orders']);
+  if (!Array.isArray(topics) || !topics.length || topics.some((topic) => !allowed.has(topic))) return null;
+  const parts = [];
+  for (const topic of [...new Set(topics)]) {
+    if (topic === 'hours') parts.push(ANSWERS.hours);
+    else parts.push(ANSWERS[topic]);
+  }
+  if (topics.some((topic) => topic === 'suppliers' || topic === 'hours')) parts.push('أي خدمة ثانية؟');
+  return { reply: parts.join(' '), topics: [...new Set(topics)], requiresHuman: false };
 }
 
 export { ANSWERS as WHATSAPP_ANSWERS };

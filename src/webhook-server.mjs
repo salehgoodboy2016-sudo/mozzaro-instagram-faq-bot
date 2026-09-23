@@ -14,6 +14,8 @@ import { WhatsAppStore } from './whatsapp-store.mjs';
 import { WhatsAppService } from './whatsapp-service.mjs';
 import { WhatsAppClient } from './whatsapp-client.mjs';
 import { KapsoClient } from './kapso-client.mjs';
+import { ClaudeClient } from './claude-client.mjs';
+import { MOZZARO_KNOWLEDGE } from './mozzaro-knowledge.mjs';
 import { extractKapsoEvents, verifyKapsoSignature } from './kapso-webhook.mjs';
 
 // Deployment providers inject secrets through process.env. Merge the local
@@ -57,6 +59,12 @@ const config = {
   kapsoEnabled: env.WHATSAPP_AUTOMATION_ENABLED === 'true'
     && env.KAPSO_AUTO_REPLY_ENABLED === 'true'
     && env.KAPSO_LIVE_SEND_APPROVED === 'true',
+  claudeApiKey: env.ANTHROPIC_API_KEY || '',
+  claudeModel: env.ANTHROPIC_MODEL || '',
+  claudeAiEnabled: env.WHATSAPP_CLAUDE_AI_ENABLED === 'true',
+  claudeMonthlyLimitUsd: Number(env.WHATSAPP_AI_MONTHLY_LIMIT_USD || 0),
+  claudeInputUsdPerMillion: Number(env.ANTHROPIC_INPUT_USD_PER_MILLION || 0),
+  claudeOutputUsdPerMillion: Number(env.ANTHROPIC_OUTPUT_USD_PER_MILLION || 0),
   adminApiToken: env.MOZZARO_ADMIN_API_TOKEN || '',
 };
 const store = new StateStore(config.stateFile, config.repeatCooldownMs);
@@ -179,6 +187,8 @@ export function createWebhookServer(overrides = {}) {
         whatsappAutoReplyEnabled: handlerConfig.whatsappEnabled,
         kapsoWebhookConfigured: Boolean(handlerConfig.kapsoWebhookSecret),
         kapsoAutoReplyEnabled: handlerConfig.kapsoEnabled,
+        claudeAiEnabled: handlerConfig.claudeAiEnabled === true && Boolean(handlerConfig.claudeApiKey && handlerConfig.claudeModel
+          && handlerConfig.claudeMonthlyLimitUsd > 0 && handlerConfig.claudeInputUsdPerMillion > 0 && handlerConfig.claudeOutputUsdPerMillion > 0),
       })); return;
     }
     if (new URL(req.url || '/', 'http://localhost').pathname.startsWith('/admin/whatsapp/')) {
@@ -187,13 +197,16 @@ export function createWebhookServer(overrides = {}) {
       const pathname = new URL(req.url || '/', 'http://localhost').pathname;
       if (req.method === 'GET' && pathname === '/admin/whatsapp/status') {
         const recent = automationService?.store ? await automationService.store.recent() : [];
+        const aiUsage = automationService?.store?.getAiBudgetStatus
+          ? await automationService.store.getAiBudgetStatus() : null;
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ whatsappAutoReplyEnabled: handlerConfig.whatsappEnabled,
           instagramAutoReplyEnabled: handlerConfig.enabled,
           coexistenceVerified: handlerConfig.whatsappCoexistenceVerified,
           kapsoAutoReplyEnabled: handlerConfig.kapsoEnabled,
           kapsoCoexistenceVerified: handlerConfig.kapsoCoexistenceVerified,
-          persistentStoreReady: Boolean(automationService?.store), recent })); return;
+          persistentStoreReady: Boolean(automationService?.store), aiUsage,
+          aiMonthlyLimitUsd: handlerConfig.claudeMonthlyLimitUsd || 0, recent })); return;
       }
       if (req.method === 'POST' && ['preview', 'handoff'].includes(pathname.split('/').pop())) {
         const raw = await readLimitedBody(req);
@@ -357,9 +370,13 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     phoneNumberId: config.whatsappPhoneNumberId, allowlist: config.whatsappAutomationAllowlist });
   const kapsoClient = new KapsoClient({ apiKey: config.kapsoApiKey, phoneNumberId: config.kapsoPhoneNumberId,
     apiVersion: config.kapsoApiVersion, enabled: config.kapsoEnabled && config.kapsoCoexistenceVerified });
+  const claudeClient = new ClaudeClient({ apiKey: config.claudeApiKey, model: config.claudeModel,
+    enabled: config.claudeAiEnabled && Boolean(config.claudeApiKey && config.claudeModel && config.claudeMonthlyLimitUsd > 0
+      && config.claudeInputUsdPerMillion > 0 && config.claudeOutputUsdPerMillion > 0) });
   const kapsoService = new WhatsAppService({ store: whatsappStore, client: kapsoClient,
     enabled: config.kapsoEnabled, coexistenceVerified: config.kapsoCoexistenceVerified,
-    phoneNumberId: config.kapsoPhoneNumberId, allowlist: config.whatsappAutomationAllowlist });
+    phoneNumberId: config.kapsoPhoneNumberId, allowlist: config.whatsappAutomationAllowlist,
+    aiClient: claudeClient, aiMonthlyLimitUsd: config.claudeMonthlyLimitUsd, knowledge: MOZZARO_KNOWLEDGE });
   if (whatsappStore && config.whatsappResumeSender) {
     const resumePhoneId = config.kapsoPhoneNumberId || config.whatsappPhoneNumberId;
     const resumeConversationId = whatsappStore.conversationId(resumePhoneId, config.whatsappResumeSender);
@@ -370,7 +387,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   server.listen(config.port, () => {
     console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,
       instagramAutoReplyEnabled: config.enabled, whatsappAutomationEnabled: config.whatsappGlobalEnabled,
-      whatsappAutoReplyEnabled: config.whatsappEnabled, kapsoAutoReplyEnabled: config.kapsoEnabled }));
+      whatsappAutoReplyEnabled: config.whatsappEnabled, kapsoAutoReplyEnabled: config.kapsoEnabled,
+      claudeAiEnabled: claudeClient.enabled }));
     selfTestWhatsAppChallenge(config.port, config.whatsappVerifyToken)
       .then((accepted) => console.log(JSON.stringify({ service: 'whatsapp-webhook', challengeSelfTest: accepted ? 'passed' : 'failed' })))
       .catch(() => console.error(JSON.stringify({ service: 'whatsapp-webhook', challengeSelfTest: 'error' })));

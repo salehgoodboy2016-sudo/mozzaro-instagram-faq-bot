@@ -78,6 +78,54 @@ export class WhatsAppStore {
     return result.rowCount === 1;
   }
 
+  async getAiContext(conversationId) {
+    await this.pool.query('DELETE FROM whatsapp_ai_context WHERE expires_at <= now()');
+    const result = await this.pool.query(`SELECT turns FROM whatsapp_ai_context
+      WHERE conversation_id=$1 AND expires_at > now()`, [conversationId]);
+    return Array.isArray(result.rows[0]?.turns) ? result.rows[0].turns : [];
+  }
+
+  async appendAiContext(conversationId, userText, assistantText) {
+    const previous = await this.getAiContext(conversationId);
+    const turns = [...previous, { role: 'user', content: userText }, { role: 'assistant', content: assistantText }].slice(-6);
+    await this.pool.query(`INSERT INTO whatsapp_ai_context (conversation_id, turns, expires_at)
+      VALUES ($1,$2::jsonb,now()+interval '24 hours') ON CONFLICT (conversation_id) DO UPDATE SET
+      turns=$2::jsonb, expires_at=now()+interval '24 hours', updated_at=now()`,
+    [conversationId, JSON.stringify(turns)]);
+  }
+
+  async reserveAiBudget(eventId, estimateUsd, monthlyLimitUsd) {
+    if (!monthlyLimitUsd || estimateUsd <= 0 || estimateUsd > monthlyLimitUsd) return false;
+    const month = new Date().toISOString().slice(0, 7) + '-01';
+    const current = await this.pool.query('SELECT reserved_usd,spent_usd FROM whatsapp_ai_budget WHERE month=$1::date', [month]);
+    if (current.rowCount && Number(current.rows[0].reserved_usd) + Number(current.rows[0].spent_usd) + estimateUsd > monthlyLimitUsd) return false;
+    const inserted = await this.pool.query(`INSERT INTO whatsapp_ai_budget(month,reserved_usd)
+      VALUES ($1::date,$2) ON CONFLICT(month) DO UPDATE SET reserved_usd=whatsapp_ai_budget.reserved_usd+$2
+      WHERE whatsapp_ai_budget.reserved_usd+whatsapp_ai_budget.spent_usd+$2 <= $3 RETURNING month`,
+    [month, estimateUsd, monthlyLimitUsd]);
+    if (inserted.rowCount !== 1) return false;
+    const call = await this.pool.query(`INSERT INTO whatsapp_ai_calls(event_id,month,reserved_usd)
+      VALUES ($1,$2::date,$3) ON CONFLICT DO NOTHING`, [eventId, month, estimateUsd]);
+    if (call.rowCount !== 1) {
+      await this.pool.query('UPDATE whatsapp_ai_budget SET reserved_usd=reserved_usd-$2 WHERE month=$1::date', [month, estimateUsd]);
+      return false;
+    }
+    return true;
+  }
+
+  async recordAiUsage(eventId, actualUsd) {
+    const updated = await this.pool.query(`UPDATE whatsapp_ai_calls SET actual_usd=$2
+      WHERE event_id=$1 AND actual_usd IS NULL RETURNING month,reserved_usd`, [eventId, actualUsd]);
+    if (updated.rowCount) await this.pool.query(`UPDATE whatsapp_ai_budget SET reserved_usd=GREATEST(reserved_usd-$2,0),
+      spent_usd=spent_usd+$3 WHERE month=$1::date`, [updated.rows[0].month, updated.rows[0].reserved_usd, actualUsd]);
+  }
+
+  async getAiBudgetStatus() {
+    const month = new Date().toISOString().slice(0, 7) + '-01';
+    const result = await this.pool.query(`SELECT reserved_usd,spent_usd FROM whatsapp_ai_budget WHERE month=$1::date`, [month]);
+    return { month, reservedUsd: Number(result.rows[0]?.reserved_usd || 0), spentUsd: Number(result.rows[0]?.spent_usd || 0) };
+  }
+
   async recent(limit = 20) {
     const result = await this.pool.query(`SELECT e.event_type, e.outcome, e.created_at,
       e.conversation_id, c.human_active FROM whatsapp_events e

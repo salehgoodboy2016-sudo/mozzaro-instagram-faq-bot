@@ -4,6 +4,7 @@ import { createHmac } from 'node:crypto';
 import { planWhatsAppReply, isOpenInRiyadh } from '../src/whatsapp-faq.mjs';
 import { WhatsAppClient, MockWhatsAppClient } from '../src/whatsapp-client.mjs';
 import { WhatsAppService, extractWhatsAppEvents } from '../src/whatsapp-service.mjs';
+import { ClaudeClient } from '../src/claude-client.mjs';
 import { createWebhookServer, selfTestWhatsAppChallenge } from '../src/webhook-server.mjs';
 import { buildCoexistenceLoginOptions, parseCoexistenceSession } from '../src/coexistence-signup.mjs';
 
@@ -31,6 +32,10 @@ class MemoryStore {
   }
   async recordCustomerActivity(id, at) { this.conversations.set(id, { ...(this.conversations.get(id) || {}), latest_customer_at: at }); }
   async recordEmployeeActivity(id, at) { this.conversations.set(id, { ...(this.conversations.get(id) || {}), human_active: true, last_employee_at: at }); }
+  async getAiContext() { return []; }
+  async reserveAiBudget() { return true; }
+  async recordAiUsage() {}
+  async appendAiContext() {}
   async reserveSend(eventId, conversationId, eventAt) {
     const event = this.events.get(eventId), c = this.conversations.get(conversationId);
     if (event.outcome !== 'received' || c?.human_active || c?.last_employee_at >= eventAt || c?.latest_customer_at > eventAt) return false;
@@ -62,6 +67,71 @@ test('complaints and unknown questions require human attention and safe fallback
   const unknown = planWhatsAppReply('هل عندكم خصومات اليوم؟');
   assert.equal(unknown.requiresHuman, true);
   assert.match(unknown.reply, /بنحوّل استفسارك للفريق/);
+});
+
+test('Claude adapter uses official Messages API shape and validates safe JSON output', async () => {
+  let request;
+  const client = new ClaudeClient({ apiKey: 'secret', model: 'test-model', enabled: true,
+    inputUsdPerMillion: 1, outputUsdPerMillion: 2,
+    fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, json: async () => ({
+      content: [{ type: 'text', text: '{"action":"answer","topics":["hours"]}' }], usage: { input_tokens: 10, output_tokens: 5 },
+    }) }; } });
+  const result = await client.answer({ userText: 'هلا', context: [], knowledge: { hoursText: '12 ظهرًا' } });
+  assert.equal(request.url, 'https://api.anthropic.com/v1/messages');
+  assert.equal(request.options.headers['anthropic-version'], '2023-06-01');
+  assert.equal(JSON.parse(request.options.body).messages[0].content, 'هلا');
+  assert.deepEqual(result.topics, ['hours']);
+  assert.equal(client.estimateUsd([{ role: 'user', content: 'هلا' }], 220, {}) > 0, true);
+});
+
+test('Claude errors are surfaced without leaking provider content', async () => {
+  const client = new ClaudeClient({ apiKey: 'secret', model: 'test', enabled: true,
+    fetchImpl: async () => ({ ok: false, status: 429, json: async () => ({ error: { type: 'rate_limit_error' } }) }) });
+  await assert.rejects(client.answer({ userText: 'test', knowledge: {} }), (error) => error.status === 429 && error.code === 'rate_limit_error');
+});
+
+test('Claude handoff activates conversation handoff and sends no reply', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const aiClient = { enabled: true, inputUsdPerMillion: 1, outputUsdPerMillion: 2,
+    estimateUsd: () => 0.001, answer: async () => ({ action: 'handoff', topics: [], inputTokens: 2, outputTokens: 2 }) };
+  const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 2, knowledge: { hoursText: '12-3' },
+    phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+  assert.deepEqual((await service.process(sample('هل عندكم خيارات نباتية؟', 'ai-handoff'))).outcomes, { human_required: 1 });
+  assert.equal(store.conversations.get(store.conversationId(phoneId, '966500000001')).human_active, true);
+  assert.equal(client.sent.length, 0);
+});
+
+test('Claude chooses a verified fact topic while Render supplies the approved Arabic copy', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const aiClient = { enabled: true, inputUsdPerMillion: 1, outputUsdPerMillion: 1,
+    estimateUsd: () => 0.001, answer: async () => ({ action: 'answer', topics: ['hours'], inputTokens: 4, outputTokens: 3 }) };
+  const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 2, knowledge: { hoursText: 'verified' },
+    phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+  assert.deepEqual((await service.process(sample('دوامكم كيف؟', 'ai-hours'))).outcomes, { sent: 1 });
+  assert.equal(client.sent[0].text, 'ساعات العمل في موزارو من 12 ظهرًا إلى 3 صباحًا، جميع أيام الأسبوع. أي خدمة ثانية؟');
+});
+
+test('Claude is never called for a non-allowlisted customer or complaint', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient(); let calls = 0;
+  const aiClient = { enabled: true, estimateUsd: () => 0.001, answer: async () => { calls++; return { action: 'answer', topics: ['hours'], inputTokens: 3, outputTokens: 4 }; } };
+  const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 2, knowledge: {}, phoneNumberId: phoneId,
+    enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+  const external = sample('هلا', 'ai-blocked'); external.entry[0].changes[0].value.messages[0].from = '966500000002';
+  await service.process(external);
+  await service.process(sample('طلبي ناقص', 'ai-complaint'));
+  assert.equal(calls, 0);
+});
+
+test('monthly Claude budget exhaustion pauses and hands off without sending', async () => {
+  const store = new MemoryStore(); store.reserveAiBudget = async () => false;
+  const client = new MockWhatsAppClient(); let calls = 0;
+  const aiClient = { enabled: true, estimateUsd: () => 0.001, answer: async () => { calls++; } };
+  const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 0.01, knowledge: {}, phoneNumberId: phoneId,
+    enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+  assert.deepEqual((await service.process(sample('وش عندكم؟', 'ai-budget'))).outcomes, { ai_budget_exceeded: 1 });
+  assert.equal(calls, 0);
+  assert.equal(client.sent.length, 0);
+  assert.equal(store.conversations.get(store.conversationId(phoneId, '966500000001')).human_active, true);
 });
 
 test('status events are not incoming messages', () => {
