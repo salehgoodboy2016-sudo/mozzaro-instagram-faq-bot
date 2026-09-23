@@ -1,3 +1,5 @@
+import { MOZZARO_KNOWLEDGE } from './mozzaro-knowledge.mjs';
+
 const TOPICS = Object.freeze({
   suppliers: 'suppliers',
   localChicken: 'localChicken',
@@ -7,11 +9,11 @@ const TOPICS = Object.freeze({
 });
 
 const ANSWERS = Object.freeze({
-  suppliers: 'الدجاج عندنا من ساديا، والبيبروني من أمريكانا. أي خدمة ثانية؟',
-  localChicken: 'الدجاج عندنا محلي ومن ساديا، والبيبروني من أمريكانا. أي خدمة ثانية؟',
-  hours: 'ساعات العمل في موزارو من 12 ظهرًا إلى 3 صباحًا، جميع أيام الأسبوع. أي خدمة ثانية؟',
-  catering: 'لتفاصيل الكيترنق، تفضلوا بالتواصل على الواتساب: 0545383080',
-  orders: 'للطلبات، اتصلوا على الرقم التالي ويرد عليكم الكاشير: 0565017314',
+  suppliers: `${MOZZARO_KNOWLEDGE.suppliersText} أي خدمة ثانية؟`,
+  localChicken: `${MOZZARO_KNOWLEDGE.localChickenText} أي خدمة ثانية؟`,
+  hours: `${MOZZARO_KNOWLEDGE.hoursText} أي خدمة ثانية؟`,
+  catering: MOZZARO_KNOWLEDGE.cateringText,
+  orders: MOZZARO_KNOWLEDGE.ordersText,
 });
 
 function normalizeArabic(value) {
@@ -61,10 +63,10 @@ export function classifyFaq(rawText) {
 
 function isOpenNow(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Riyadh', hour: 'numeric', hour12: false,
+    timeZone: MOZZARO_KNOWLEDGE.timezone, hour: 'numeric', hour12: false,
   }).formatToParts(date);
   const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0);
-  return hour >= 12 || hour < 3;
+  return hour >= MOZZARO_KNOWLEDGE.opensAtHour || hour < MOZZARO_KNOWLEDGE.closesAtHour;
 }
 
 export function composeReply(rawText, now = new Date(), topicFilter = null) {

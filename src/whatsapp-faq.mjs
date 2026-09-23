@@ -1,19 +1,20 @@
 import { normalizeArabic } from './faq.mjs';
+import { MOZZARO_KNOWLEDGE } from './mozzaro-knowledge.mjs';
 
 const ANSWERS = Object.freeze({
-  suppliers: 'الدجاج عندنا من ساديا، والبيبروني من أمريكانا.',
-  hours: 'ساعات العمل في موزارو من 12 ظهرًا إلى 3 صباحًا، جميع أيام الأسبوع.',
-  catering: 'لتفاصيل الكيترنق، تفضلوا بالتواصل على الواتساب: 0545383080',
-  orders: 'للطلبات، اتصلوا على الرقم التالي ويرد عليكم الكاشير: 0565017314',
+  suppliers: MOZZARO_KNOWLEDGE.suppliersText,
+  hours: MOZZARO_KNOWLEDGE.hoursText,
+  catering: MOZZARO_KNOWLEDGE.cateringText,
+  orders: MOZZARO_KNOWLEDGE.ordersText,
 });
 
 const includes = (text, terms) => terms.some((term) => text.includes(normalizeArabic(term)));
 
 export function isOpenInRiyadh(now = new Date()) {
   const hour = Number(new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Riyadh', hour: 'numeric', hourCycle: 'h23',
+    timeZone: MOZZARO_KNOWLEDGE.timezone, hour: 'numeric', hourCycle: 'h23',
   }).formatToParts(now).find((part) => part.type === 'hour')?.value);
-  return hour >= 12 || hour < 3;
+  return hour >= MOZZARO_KNOWLEDGE.opensAtHour || hour < MOZZARO_KNOWLEDGE.closesAtHour;
 }
 
 export function planWhatsAppReply(rawText, now = new Date()) {
@@ -40,7 +41,7 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     if (greeting && includes(text, ['السلام عليكم', 'سلام عليكم', 'هلا', 'اهلا', 'مرحبا', 'يا هلا']) && text.split(' ').length <= 3) {
       return { reply: greeting, topics: ['greeting'], requiresHuman: false };
     }
-    return { reply: 'شكرًا لتواصلك مع موزارو. بنحوّل استفسارك للفريق للمتابعة.', topics: [], requiresHuman: true, reason: 'unknown_question' };
+    return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
   }
 
   const parts = greeting ? [greeting] : [];

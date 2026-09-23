@@ -49,7 +49,10 @@ export class WhatsAppService {
   }
 
   async process(payload) {
-    const events = extractWhatsAppEvents(payload);
+    return this.processEvents(extractWhatsAppEvents(payload));
+  }
+
+  async processEvents(events) {
     const outcomes = {};
     for (const event of events) {
       const outcome = await this.processEvent(event);

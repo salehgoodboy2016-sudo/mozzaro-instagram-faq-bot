@@ -13,6 +13,8 @@ import { planWhatsAppReply } from './whatsapp-faq.mjs';
 import { WhatsAppStore } from './whatsapp-store.mjs';
 import { WhatsAppService } from './whatsapp-service.mjs';
 import { WhatsAppClient } from './whatsapp-client.mjs';
+import { KapsoClient } from './kapso-client.mjs';
+import { extractKapsoEvents, verifyKapsoSignature } from './kapso-webhook.mjs';
 
 // Deployment providers inject secrets through process.env. Merge the local
 // .env file for development without ever requiring that file in production.
@@ -34,13 +36,25 @@ const config = {
   mentionReviewEnabled: env.INSTAGRAM_MENTION_REVIEW_ENABLED === 'true',
   whatsappVerifyToken: env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || '',
   whatsappAppSecret: env.WHATSAPP_WEBHOOK_APP_SECRET || '',
-  whatsappEnabled: env.WHATSAPP_AUTO_REPLY_ENABLED === 'true' && env.WHATSAPP_LIVE_SEND_APPROVED === 'true',
+  whatsappEnabled: env.WHATSAPP_AUTOMATION_ENABLED === 'true'
+    && env.WHATSAPP_AUTO_REPLY_ENABLED === 'true'
+    && env.WHATSAPP_LIVE_SEND_APPROVED === 'true',
   whatsappCoexistenceVerified: env.WHATSAPP_COEXISTENCE_VERIFIED === 'true',
   whatsappEmployeeEchoVerified: env.WHATSAPP_EMPLOYEE_ECHO_VERIFIED === 'true',
   whatsappPhoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID || '816217614914860',
   whatsappAccessToken: env.WHATSAPP_ACCESS_TOKEN || '',
   whatsappDatabaseUrl: env.WHATSAPP_DATABASE_URL || '',
   whatsappIdentityKey: env.WHATSAPP_IDENTITY_KEY || '',
+  whatsappGlobalEnabled: env.WHATSAPP_AUTOMATION_ENABLED === 'true',
+  kapsoWebhookSecret: env.KAPSO_WEBHOOK_SECRET || '',
+  kapsoApiKey: env.KAPSO_API_KEY || '',
+  kapsoPhoneNumberId: env.KAPSO_PHONE_NUMBER_ID || '',
+  kapsoApiVersion: env.KAPSO_WHATSAPP_API_VERSION || 'v24.0',
+  kapsoCoexistenceVerified: env.KAPSO_COEXISTENCE_VERIFIED === 'true',
+  kapsoEmployeeEchoVerified: env.KAPSO_EMPLOYEE_ECHO_VERIFIED === 'true',
+  kapsoEnabled: env.WHATSAPP_AUTOMATION_ENABLED === 'true'
+    && env.KAPSO_AUTO_REPLY_ENABLED === 'true'
+    && env.KAPSO_LIVE_SEND_APPROVED === 'true',
   adminApiToken: env.MOZZARO_ADMIN_API_TOKEN || '',
 };
 const store = new StateStore(config.stateFile, config.repeatCooldownMs);
@@ -148,6 +162,8 @@ async function processEvent(event) {
 export function createWebhookServer(overrides = {}) {
   const handlerConfig = { ...config, ...overrides };
   const whatsappService = overrides.whatsappService || null;
+  const kapsoService = overrides.kapsoService || null;
+  const automationService = kapsoService || whatsappService;
   return createServer(async (req, res) => {
     try {
     if (req.method === 'GET' && req.url === '/health') {
@@ -157,7 +173,10 @@ export function createWebhookServer(overrides = {}) {
         autoReplyEnabled: handlerConfig.enabled,
         mentionRepostEnabled: handlerConfig.mentionRepostEnabled,
         whatsappWebhookConfigured: Boolean(handlerConfig.whatsappVerifyToken && handlerConfig.whatsappAppSecret),
+        whatsappAutomationEnabled: handlerConfig.whatsappGlobalEnabled,
         whatsappAutoReplyEnabled: handlerConfig.whatsappEnabled,
+        kapsoWebhookConfigured: Boolean(handlerConfig.kapsoWebhookSecret),
+        kapsoAutoReplyEnabled: handlerConfig.kapsoEnabled,
       })); return;
     }
     if (new URL(req.url || '/', 'http://localhost').pathname.startsWith('/admin/whatsapp/')) {
@@ -165,12 +184,14 @@ export function createWebhookServer(overrides = {}) {
       if (!authorized) { res.writeHead(401); res.end('Unauthorized'); return; }
       const pathname = new URL(req.url || '/', 'http://localhost').pathname;
       if (req.method === 'GET' && pathname === '/admin/whatsapp/status') {
-        const recent = whatsappService?.store ? await whatsappService.store.recent() : [];
+        const recent = automationService?.store ? await automationService.store.recent() : [];
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ whatsappAutoReplyEnabled: handlerConfig.whatsappEnabled,
           instagramAutoReplyEnabled: handlerConfig.enabled,
           coexistenceVerified: handlerConfig.whatsappCoexistenceVerified,
-          persistentStoreReady: Boolean(whatsappService?.store), recent })); return;
+          kapsoAutoReplyEnabled: handlerConfig.kapsoEnabled,
+          kapsoCoexistenceVerified: handlerConfig.kapsoCoexistenceVerified,
+          persistentStoreReady: Boolean(automationService?.store), recent })); return;
       }
       if (req.method === 'POST' && ['preview', 'handoff'].includes(pathname.split('/').pop())) {
         const raw = await readLimitedBody(req);
@@ -182,10 +203,10 @@ export function createWebhookServer(overrides = {}) {
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
           res.end(JSON.stringify({ reply: plan.reply, requiresHuman: plan.requiresHuman, topics: plan.topics })); return;
         }
-        if (!whatsappService?.store || !/^[a-f0-9]{64}$/.test(body.conversationId) || typeof body.active !== 'boolean') {
+        if (!automationService?.store || !/^[a-f0-9]{64}$/.test(body.conversationId) || typeof body.active !== 'boolean') {
           res.writeHead(400); res.end('Invalid handoff'); return;
         }
-        await whatsappService.handoff(body.conversationId, body.active);
+        await automationService.handoff(body.conversationId, body.active);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ updated: true })); return;
       }
@@ -208,7 +229,41 @@ export function createWebhookServer(overrides = {}) {
     }
     const isInstagramPost = req.method === 'POST' && req.url?.startsWith('/webhooks/instagram');
     const isWhatsAppPost = req.method === 'POST' && new URL(req.url || '/', 'http://localhost').pathname === '/webhooks/whatsapp';
-    if (!isInstagramPost && !isWhatsAppPost) { res.writeHead(404); res.end('Not found'); return; }
+    const isKapsoPost = req.method === 'POST' && new URL(req.url || '/', 'http://localhost').pathname === '/webhooks/kapso';
+    if (!isInstagramPost && !isWhatsAppPost && !isKapsoPost) { res.writeHead(404); res.end('Not found'); return; }
+    if (isKapsoPost) {
+      if (!handlerConfig.kapsoWebhookSecret) { res.writeHead(503); res.end('Webhook not configured'); return; }
+      const raw = await readLimitedBody(req, 16 * 1024 * 1024);
+      if (!raw) { res.writeHead(413); res.end('Payload too large'); return; }
+      if (!verifyKapsoSignature(raw, req.headers['x-webhook-signature'], handlerConfig.kapsoWebhookSecret)) {
+        logWhatsAppReject('invalid_kapso_signature', raw.length);
+        res.writeHead(401); res.end('Invalid signature'); return;
+      }
+      let payload;
+      try { payload = JSON.parse(raw.toString('utf8')); } catch {
+        logWhatsAppReject('invalid_kapso_json', raw.length);
+        res.writeHead(400); res.end('Invalid JSON'); return;
+      }
+      const eventName = String(req.headers['x-webhook-event'] || payload.type || '');
+      if (!/^whatsapp\.[a-z_.]+$/.test(eventName)) {
+        logWhatsAppReject('invalid_kapso_event', raw.length);
+        res.writeHead(400); res.end('Invalid Kapso event'); return;
+      }
+      const events = extractKapsoEvents(eventName, payload, String(req.headers['x-idempotency-key'] || ''));
+      const messageCount = events.filter((event) => event.kind === 'incoming').length;
+      console.log(JSON.stringify({ service: 'kapso-webhook', received: true, eventName, eventCount: events.length, messageCount }));
+      if (kapsoService) {
+        try {
+          const result = await kapsoService.processEvents(events);
+          console.log(JSON.stringify({ service: 'kapso-automation', eventCount: result.count, outcomes: result.outcomes }));
+        } catch {
+          console.error(JSON.stringify({ service: 'kapso-automation', outcome: 'processing_failed' }));
+          res.writeHead(503); res.end('Processing unavailable'); return;
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ received: true })); return;
+    }
     if (isWhatsAppPost) {
       if (!handlerConfig.whatsappAppSecret) { res.writeHead(503); res.end('Webhook not configured'); return; }
       const raw = await readLimitedBody(req, 16 * 1024 * 1024);
@@ -268,6 +323,9 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   if (config.whatsappEnabled && (!config.whatsappCoexistenceVerified || !config.whatsappEmployeeEchoVerified || !config.whatsappDatabaseUrl || !config.whatsappIdentityKey || !config.whatsappAccessToken)) {
     throw new Error('WhatsApp automation prerequisites are incomplete');
   }
+  if (config.kapsoEnabled && (!config.kapsoCoexistenceVerified || !config.kapsoEmployeeEchoVerified || !config.whatsappDatabaseUrl || !config.whatsappIdentityKey || !config.kapsoApiKey || !config.kapsoPhoneNumberId)) {
+    throw new Error('Kapso automation prerequisites are incomplete');
+  }
   const whatsappStore = config.whatsappDatabaseUrl && config.whatsappIdentityKey
     ? new WhatsAppStore({ databaseUrl: config.whatsappDatabaseUrl, identityKey: config.whatsappIdentityKey }) : null;
   if (whatsappStore) {
@@ -281,10 +339,16 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const whatsappService = new WhatsAppService({ store: whatsappStore, client: whatsappClient,
     enabled: config.whatsappEnabled, coexistenceVerified: config.whatsappCoexistenceVerified,
     phoneNumberId: config.whatsappPhoneNumberId });
-  const server = createWebhookServer({ whatsappService });
+  const kapsoClient = new KapsoClient({ apiKey: config.kapsoApiKey, phoneNumberId: config.kapsoPhoneNumberId,
+    apiVersion: config.kapsoApiVersion, enabled: config.kapsoEnabled && config.kapsoCoexistenceVerified });
+  const kapsoService = new WhatsAppService({ store: whatsappStore, client: kapsoClient,
+    enabled: config.kapsoEnabled, coexistenceVerified: config.kapsoCoexistenceVerified,
+    phoneNumberId: config.kapsoPhoneNumberId });
+  const server = createWebhookServer({ whatsappService, kapsoService });
   server.listen(config.port, () => {
     console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,
-      instagramAutoReplyEnabled: config.enabled, whatsappAutoReplyEnabled: config.whatsappEnabled }));
+      instagramAutoReplyEnabled: config.enabled, whatsappAutomationEnabled: config.whatsappGlobalEnabled,
+      whatsappAutoReplyEnabled: config.whatsappEnabled, kapsoAutoReplyEnabled: config.kapsoEnabled }));
     selfTestWhatsAppChallenge(config.port, config.whatsappVerifyToken)
       .then((accepted) => console.log(JSON.stringify({ service: 'whatsapp-webhook', challengeSelfTest: accepted ? 'passed' : 'failed' })))
       .catch(() => console.error(JSON.stringify({ service: 'whatsapp-webhook', challengeSelfTest: 'error' })));
