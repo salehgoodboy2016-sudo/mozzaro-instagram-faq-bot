@@ -54,7 +54,9 @@ test('approved Arabic greetings, suppliers, orders, catering, and combined quest
   assert.match(combined.reply, /12 ظهرًا إلى 3 صباحًا/);
   assert.equal((combined.reply.match(/أي خدمة ثانية؟/g) || []).length, 1);
   assert.doesNotMatch(planWhatsAppReply('هل الدجاج محلي؟').reply, /محلي ومن ساديا/);
-  assert.match(planWhatsAppReply('أبي كيترنق وأبغى أطلب').reply, /0545383080.*0565017314/);
+  const cateringContact = planWhatsAppReply('رقم الكيترنق؟');
+  assert.match(cateringContact.reply, /0565017314/);
+  assert.doesNotMatch(cateringContact.reply, /0545383080/);
 });
 
 test('Riyadh opening hours continue after midnight and close at 03:00', () => {
@@ -125,6 +127,77 @@ test('Claude menu topic flows through Render approved copy without free-form gen
     phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   assert.deepEqual((await service.process(sample('كم سعر ترافل ريغاتوني؟', 'ai-menu'))).outcomes, { sent: 1 });
   assert.equal(client.sent[0].text, 'ترافل ريغاتوني (Truffle Rigatoni): 34 ريال.');
+});
+
+test('catering PDF and owner updates define every final package capacity, total, Burrata cap, duration, staff, and price', () => {
+  const expected = [
+    ['basic', 7, 15, 15, 4, 999, 3, 2, ['service_booth', 'boxes', 'serving_sauces', 'soft_drinks', 'city_booth_transport', 'pre_event_setup']],
+    ['standard', 20, 25, 30, 6, 1499, 4, 2, ['service_booth', 'boxes', 'serving_sauces', 'soft_drinks', 'city_booth_transport', 'pre_event_setup']],
+    ['premium', 40, 50, 60, 12, 2799, 4, 3, ['service_booth', 'boxes', 'plates', 'serving_sauces', 'soft_drinks', 'city_booth_transport', 'pre_event_setup']],
+    ['signature', 70, 80, 80, 20, 3699, 6, 3, ['service_booth', 'boxes', 'plates', 'serving_sauces', 'soft_drinks', 'tiramisu_coffee_hospitality', 'city_booth_transport', 'pre_event_setup']],
+    ['event', null, 100, 120, 20, 5399, 8, 3, ['service_booth', 'boxes', 'plates', 'serving_sauces', 'soft_drinks', 'tiramisu_coffee_hospitality', 'city_booth_transport', 'pre_event_setup']],
+  ];
+  assert.deepEqual(MOZZARO_KNOWLEDGE.cateringPackages.map(({ id, guestMin, guestMax, totalItems, burrataMax,
+    startingPriceSar, serviceHoursMax, staffCount, inclusions }) =>
+    [id, guestMin, guestMax, totalItems, burrataMax, startingPriceSar, serviceHoursMax, staffCount, inclusions]), expected);
+  assert.deepEqual(MOZZARO_KNOWLEDGE.cateringPackages.map(({ totalItems, burrataMax }) => totalItems - burrataMax), [11, 24, 48, 60, 100]);
+  assert.equal(MOZZARO_KNOWLEDGE.cateringRules.startingPricesOnly, true);
+  assert.equal(MOZZARO_KNOWLEDGE.cateringRules.pizzaAndPastaUseSamePackagesAndStartingPrices, true);
+  assert.equal(MOZZARO_KNOWLEDGE.cateringRules.pastaHasSeparatePackagePrice, false);
+  assert.equal(MOZZARO_KNOWLEDGE.cateringRules.burrataIsOptional, true);
+  assert.equal(MOZZARO_KNOWLEDGE.cateringRules.burrataCountsWithinTotalItems, true);
+  assert.deepEqual(MOZZARO_KNOWLEDGE.cateringRules.burrataCanBeReplacedBy, ['regular_pizza', 'pasta']);
+  assert.equal(MOZZARO_KNOWLEDGE.cateringRules.packageTotalItemsRemainFixed, true);
+});
+
+test('catering addon prices match the PDF and by-request/distance charges have no invented prices', () => {
+  assert.deepEqual(MOZZARO_KNOWLEDGE.cateringAddons.map(({ id, priceSar, priceRule }) => [id, priceSar, priceRule]), [
+    ['tiramisu_cart', 300, undefined], ['extra_pizza', 45, undefined], ['burrata_pizza', 55, undefined],
+    ['birthday_organization', 250, undefined], ['occasion_customization', null, 'by_request'],
+    ['additional_service_hour', 200, undefined], ['additional_staff_member', 150, undefined],
+    ['outside_city_service', null, 'based_on_distance'],
+  ]);
+});
+
+test('catering FAQ handles guest counts, same-price pasta choices, optional Burrata, staffing, add-ons, and contact safely', () => {
+  const standard = planWhatsAppReply('كم باقة 20 شخص؟');
+  assert.match(standard.reply, /Standard/); assert.match(standard.reply, /30 صنف إجمالي/);
+  assert.match(standard.reply, /تبدأ من 1499 ريال/); assert.doesNotMatch(standard.reply, /0545383080/);
+  const premium = planWhatsAppReply('عندي 50 شخص وش يناسبني؟');
+  assert.match(premium.reply, /Premium/); assert.match(premium.reply, /60 صنف إجمالي/);
+  assert.match(premium.reply, /تبدأ من 2799 ريال/);
+  assert.match(planWhatsAppReply('كم باقة ٢٠ شخص؟').reply, /Standard/);
+  assert.match(planWhatsAppReply('عندكم كيترنق باستا؟').reply, /نفس باقات البيتزا وأسعارها الابتدائية/);
+  assert.match(planWhatsAppReply('أقدر أخليها كلها باستا؟').reply, /ما لها تسعيرة باقات منفصلة/);
+  assert.match(planWhatsAppReply('أقدر أخلط بيتزا وباستا؟').reply, /ضمن إجمالي عدد أصناف الباقة/);
+  assert.match(planWhatsAppReply('البوراتا إجبارية؟').reply, /اختيارية وليست إجبارية/);
+  assert.match(planWhatsAppReply('أقدر أشيل البوراتا؟').reply, /تستبدل أي أو كل الكمية/);
+  assert.match(planWhatsAppReply('الـ15 بيتزا غير الأربع بوراتا؟').reply, /ضمن إجمالي عدد أصناف الباقة وليست زيادة عليه/);
+  const women = planWhatsAppReply('عندكم عاملات؟');
+  assert.match(women.reply, /رجال فقط/); assert.match(women.reply, /لا تتوفر عاملات/);
+  assert.match(planWhatsAppReply('كم ساعة إضافية؟').reply, /200 ريال/);
+  assert.match(planWhatsAppReply('كم سعر تنظيم يوم ميلاد؟').reply, /250 ريال/);
+  const contact = planWhatsAppReply('وش رقم الكيترنق؟');
+  assert.match(contact.reply, /0565017314/); assert.match(contact.reply, /\+966565017314/);
+  assert.doesNotMatch(contact.reply, /0545383080/);
+});
+
+test('custom booking, final quote, outside-city service, and unknown catering requests activate handoff', () => {
+  for (const text of ['أبي أحجز كيترنق', 'أبي كيترنق عيد ميلاد', 'كم السعر النهائي لباقة Basic؟',
+    'تجون خارج الأحساء؟', 'أبغى نكهات معينة وكمية مختلفة', 'هل عندكم خيار غير موجود بالقائمة؟']) {
+    assert.equal(planWhatsAppReply(text).requiresHuman, true, text);
+  }
+  assert.equal(planWhatsAppReply('عندي 60 شخص وش يناسبني؟').requiresHuman, true);
+});
+
+test('Instagram catering answer uses the owner-approved number without changing Instagram reply routing', () => {
+  const answer = planWhatsAppReply('رقم الكيترنق؟').reply;
+  assert.match(answer, /0565017314/);
+  assert.doesNotMatch(answer, /0545383080/);
+  assert.match(MOZZARO_KNOWLEDGE.cateringText, /0565017314/);
+  assert.doesNotMatch(MOZZARO_KNOWLEDGE.cateringText, /0545383080/);
+  assert.match(renderApprovedTopics(['catering_basic']).reply, /15 صنف إجمالي/);
+  assert.equal(MOZZARO_AI_TOPICS.includes('catering_burrata'), true);
 });
 
 test('Claude adapter uses official Messages API shape and validates safe JSON output', async () => {

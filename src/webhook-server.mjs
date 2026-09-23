@@ -24,9 +24,10 @@ const env = {
   ...parseEnv(await readFile(new URL('../.env', import.meta.url), 'utf8').catch(() => '')),
   ...process.env,
 };
-const CLAUDE_KNOWLEDGE = Object.freeze(Object.fromEntries(
-  Object.entries(MOZZARO_KNOWLEDGE).filter(([key]) => key !== 'localChickenText'),
-));
+const CLAUDE_KNOWLEDGE = Object.freeze({
+  ...Object.fromEntries(Object.entries(MOZZARO_KNOWLEDGE).filter(([key]) => key !== 'localChickenText' && key !== 'cateringText')),
+  cateringText: `لتفاصيل وحجوزات الكيترنق تواصلوا على ${MOZZARO_KNOWLEDGE.cateringContact} (${MOZZARO_KNOWLEDGE.cateringContactInternational}).`,
+});
 const config = {
   port: Number(env.PORT || 3000),
   verifyToken: env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || '',

@@ -8,6 +8,19 @@ const ANSWERS = Object.freeze({
   orders: MOZZARO_KNOWLEDGE.ordersText,
 });
 
+const CATERING_INCLUSION_TEXT = Object.freeze({
+  service_booth: 'بوث تقديم', boxes: 'بوكسات', plates: 'صحون', serving_sauces: 'صوصات تقديم',
+  soft_drinks: 'مشروبات غازية', city_booth_transport: 'نقل البوث داخل المدينة',
+  pre_event_setup: 'تجهيز وترتيب قبل الموعد', tiramisu_coffee_hospitality: 'ضيافة تيراميسو وقهوة',
+});
+const CATERING_PACKAGE_ALIASES = Object.freeze({
+  basic: ['basic', 'بيسك', 'باقة بيسك'],
+  standard: ['standard', 'ستاندرد', 'باقة ستاندرد'],
+  premium: ['premium', 'بريميوم', 'باقة بريميوم'],
+  signature: ['signature', 'سيغنتشر', 'سيجنشر', 'باقة سيغنتشر'],
+  event: ['event', 'ايفنت', 'إيفنت', 'باقة ايفنت'],
+});
+
 const MENU_GROUPS = Object.freeze({
   menu_pizza: 'pizza', menu_pasta: 'pasta', menu_appetizers: 'appetizers',
   menu_sauces: 'sauces', menu_drinks: 'drinks',
@@ -91,6 +104,108 @@ function isMenuAvailabilityQuestion(text, topics) {
   return explicit || asksWhetherStocked;
 }
 
+function isCateringQuestion(text) {
+  return includes(text, ['كيترنق', 'كيترينج', 'كترنق', 'كاترينج', 'catering', 'بوفيه', 'باقة', 'باقات',
+    'عندكم عاملات', 'الطاقم نسائي', 'موظفات للكيترنق', 'كم عامل', 'عدد العمال', 'الطاقم', 'staff count', 'how many staff',
+    'كم تجلسون', 'مدة الخدمة', 'مدة الباقة', 'service duration', 'how long', 'مقبلات للكيترنق', 'بيتزا وباستا', 'بيتزا او باستا',
+    'بيتزا أو باستا', 'بوراتا اجبارية', 'البوراتا اجباريه', 'اشيل البوراتا', 'استبدل البوراتا', 'بدل البوراتا'])
+    || Object.values(CATERING_PACKAGE_ALIASES).some((aliases) => includes(text, aliases))
+    || (/[0-9٠-٩۰-۹]/.test(text) && includes(text, ['شخص', 'اشخاص', 'ضيف', 'ضيوف', 'guest', 'people', 'person']))
+    || (includes(text, ['بوراتا']) && includes(text, ['العدد', 'الإجمالي', 'الاجمالي', 'ضمن الباقة', 'اجبارية', 'اشيل', 'استبدل', 'بدل', 'غير الاربع']))
+    || (includes(text, ['بيتزا', 'باستا', 'pasta', 'pizza']) && includes(text, ['اخلط', 'اخلطها', 'كلها باستا', 'بدلها', 'مكس', 'mix']));
+}
+
+function renderCateringPackage(packageId) {
+  const pack = MOZZARO_KNOWLEDGE.cateringPackages.find(({ id }) => id === packageId);
+  if (!pack) return null;
+  const guests = pack.guestMin == null ? `حتى ${pack.guestMax} ضيف` : `${pack.guestMin}–${pack.guestMax} ضيف`;
+  const workers = pack.staffCount === 1 ? 'رجل واحد من الطاقم' : `${pack.staffCount} رجال من الطاقم`;
+  const inclusions = pack.inclusions.map((item) => CATERING_INCLUSION_TEXT[item]).filter(Boolean).join('، ');
+  return `باقة ${pack.name} مناسبة لـ${guests}: ${pack.totalItems} صنف إجمالي، وحتى ${pack.burrataMax} بيتزا بوراتا اختيارية ضمن الإجمالي (تقدر تستبدلها ببيتزا عادية أو باستا). تبدأ من ${pack.startingPriceSar} ريال، ومدة الخدمة حتى ${pack.serviceHoursMax} ساعات، والطاقم ${workers}. تشمل ${inclusions}.`;
+}
+
+function renderCateringTopic(topic) {
+  if (topic.startsWith('catering_addon_')) {
+    const addonId = topic.slice('catering_addon_'.length);
+    const addon = MOZZARO_KNOWLEDGE.cateringAddons.find(({ id }) => id === addonId);
+    return addon?.priceSar == null ? null : `${addon.nameAr} (${addon.nameEn}) سعرها ${addon.priceSar} ريال.`;
+  }
+  if (topic.startsWith('catering_') && MOZZARO_KNOWLEDGE.cateringPackages.some(({ id }) => topic === `catering_${id}`)) {
+    return renderCateringPackage(topic.slice('catering_'.length));
+  }
+  if (topic === 'catering_packages') {
+    const lines = MOZZARO_KNOWLEDGE.cateringPackages.map((pack) =>
+      `${pack.name}: ${pack.guestMin == null ? `حتى ${pack.guestMax}` : `${pack.guestMin}–${pack.guestMax}`} ضيف، ${pack.totalItems} صنف إجمالي (حتى ${pack.burrataMax} بوراتا اختيارية ضمنها)، تبدأ من ${pack.startingPriceSar} ريال`);
+    return `باقات الكيترنق وأسعارها الابتدائية: ${lines.join('؛ ')}. السعر النهائي والتوفر يؤكدهما الفريق.`;
+  }
+  if (topic === 'catering_types') return 'تقدر تختار بيتزا فقط، أو باستا فقط، أو تخلط بيتزا وباستا ضمن إجمالي عدد أصناف الباقة. الباستا لها نفس باقات البيتزا وأسعارها الابتدائية، وما لها تسعيرة باقات منفصلة.';
+  if (topic === 'catering_burrata') return 'البوراتا اختيارية وليست إجبارية، وكمّيتها ضمن إجمالي عدد أصناف الباقة وليست زيادة عليه. تقدر تستبدل أي أو كل الكمية المخصصة ببيتزا عادية أو باستا، ويبقى إجمالي العدد ثابتًا.';
+  if (topic === 'catering_staff') return `${MOZZARO_KNOWLEDGE.cateringStaffGenderText} عدد الطاقم حسب الباقة: Basic وStandard رجلان، وPremium وSignature وEvent ثلاثة رجال.`;
+  if (topic === 'catering_hours') return 'مدة الخدمة القصوى حسب الباقة: Basic حتى 3 ساعات، Standard وPremium حتى 4 ساعات، Signature حتى 6 ساعات، وEvent حتى 8 ساعات.';
+  if (topic === 'catering_inclusions') return 'تشمل الباقات بوث التقديم، وتجهيزًا قبل الموعد، ونقل البوث داخل المدينة، وصوصات تقديم ومشروبات غازية. Basic وStandard تشملان بوكسات؛ Premium وSignature وEvent تشمل بوكسات وصحون؛ وSignature وEvent تشملان أيضًا ضيافة تيراميسو وقهوة.';
+  if (topic === 'catering_addons') {
+    const listed = MOZZARO_KNOWLEDGE.cateringAddons.map((addon) => addon.priceSar == null
+      ? `${addon.nameAr}: ${addon.priceRule === 'based_on_distance' ? 'حسب المسافة' : 'حسب الطلب'}`
+      : `${addon.nameAr}: ${addon.priceSar} ريال`);
+    return `الإضافات: ${listed.join('؛ ')}. أي طلب مخصص أو عرض نهائي يحتاج تأكيد الفريق.`;
+  }
+  if (topic === 'catering_contact' || topic === 'catering') {
+    return `لتفاصيل وحجوزات الكيترنق تواصلوا على ${MOZZARO_KNOWLEDGE.cateringContact} (${MOZZARO_KNOWLEDGE.cateringContactInternational}).`;
+  }
+  return null;
+}
+
+function cateringTopicsFor(text) {
+  const femaleStaff = includes(text, ['عاملات', 'الطاقم نسائي', 'موظفات للكيترنق', 'فيه موظفات']);
+  if (femaleStaff) return ['catering_staff'];
+
+  const latinDigits = text.replace(/[٠-٩]/g, (digit) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)))
+    .replace(/[۰-۹]/g, (digit) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit)));
+  const number = Number(latinDigits.match(/(?:^|\s)(\d{1,3})(?:\s|$)/)?.[1]);
+  if (Number.isFinite(number) && includes(text, ['شخص', 'اشخاص', 'ضيف', 'ضيوف', 'guest', 'people', 'person'])) {
+    const exact = MOZZARO_KNOWLEDGE.cateringPackages.find((pack) => pack.guestMin != null
+      && number >= pack.guestMin && number <= pack.guestMax);
+    if (exact) return [`catering_${exact.id}`];
+    if (number > 80 && number <= 100) return ['catering_event'];
+    return [];
+  }
+
+  for (const [id, aliases] of Object.entries(CATERING_PACKAGE_ALIASES)) {
+    if (includes(text, aliases)) return [`catering_${id}`];
+  }
+  if (includes(text, ['ساعة إضافية', 'ساعه اضافيه', 'تمديد ساعة', 'additional hour', 'extra hour'])) return ['catering_addon_additional_service_hour'];
+  if (includes(text, ['كم ساعة', 'كم ساعه', 'مدة الخدمة', 'مدة الباقة', 'كم تجلسون', 'service duration', 'how long'])) return ['catering_hours'];
+  if (includes(text, ['كم عامل', 'كم عاملين', 'عدد العمال', 'الطاقم', 'staff count', 'how many staff'])) return ['catering_staff'];
+  if (includes(text, ['ضيافة تيراميسو وقهوة', 'تيراميسو وقهوة', 'التيراميسو مشمول', 'تيراميسو مشمول'])) return ['catering_inclusions'];
+  if (includes(text, ['عربة تيراميسو', 'tiramisu cart'])) return ['catering_addon_tiramisu_cart'];
+  if (includes(text, ['عامل إضافي', 'عامل اضافي', 'additional worker', 'extra staff'])) return ['catering_addon_additional_staff_member'];
+  if (includes(text, ['تنظيم يوم ميلاد', 'تنظيم عيد ميلاد', 'birthday organization'])) return ['catering_addon_birthday_organization'];
+  if (includes(text, ['بيتزا بوراتا', 'بوراتا بيتزا', 'burrata pizza', 'بيتزا اضافيه', 'بيتزا إضافية', 'additional pizza'])) {
+    if (includes(text, ['بوراتا', 'burrata'])) return ['catering_addon_burrata_pizza'];
+    return ['catering_addon_extra_pizza'];
+  }
+  if (includes(text, ['إضافات', 'اضافات', 'الاضافات', 'الإضافات', 'add ons', 'add-ons'])) return ['catering_addons'];
+  if (includes(text, ['مشمول', 'تشمل', 'المحتويات', 'بوكسات', 'صحون', 'تيراميسو وقهوة', 'inclusions'])) return ['catering_inclusions'];
+  if (includes(text, ['كيترنق باستا', 'باستا كيترنق', 'catering pasta', 'كيترنق بيتزا', 'catering pizza', 'بيتزا فقط', 'باستا فقط'])) return ['catering_types'];
+  if (includes(text, ['البوراتا', 'بوراتا']) && includes(text, ['اجباري', 'اجباريه', 'إجباري', 'أشيل', 'اشيل', 'استبدل', 'بدل', 'اختياري', 'غير', 'زيادة', 'فوق', 'ضمن'])) return ['catering_burrata'];
+  if (includes(text, ['باستا فقط', 'كلها باستا', 'اخلط', 'بيتزا وباستا', 'pasta only', 'mix pizza and pasta'])) return ['catering_types'];
+  if (includes(text, ['رقم الكيترنق', 'رقم التواصل', 'كيف اتواصل', 'للتواصل', 'contact number'])) return ['catering_contact'];
+  if (includes(text, ['خارج المدينة', 'برا المدينة', 'خارج الاحساء', 'خارج الأحساء', 'حسب المسافة', 'outside city'])) return ['catering_custom'];
+  if (includes(text, ['حجز', 'احجز', 'احجزوا', 'تأكيد الحجز', 'تاريخ الحفل', 'booking', 'confirm booking'])) return ['catering_custom'];
+  if (includes(text, ['نكهات معينة', 'طلب خاص', 'تخصيص المناسبة', 'تغيير عدد الأصناف', 'تغيير عدد الاصناف', 'زيادة عدد الأصناف', 'زيادة عدد الاصناف', 'سعر نهائي', 'عرض سعر', 'quote', 'custom order'])) return ['catering_custom'];
+  if (includes(text, ['قائمة الباقات', 'كل الباقات', 'اسعار الباقات', 'اسعار الباقة', 'باقات الكيترنق', 'catering packages', 'package prices'])) return ['catering_packages'];
+  if (isCateringQuestion(text) && includes(text, ['مناسب', 'اسعار', 'الاسعار', 'price', 'كم باقة', 'باقة'])) return ['catering_packages'];
+  return [];
+}
+
+function isCustomCateringRequest(text) {
+  return includes(text, ['تأكيد الحجز', 'حجز', 'احجز', 'تاريخ الحفل', 'موعد الحفل', 'متاح للحجز', 'booking', 'confirm booking',
+    'خارج المدينة', 'برا المدينة', 'خارج الاحساء', 'خارج الأحساء', 'حسب المسافة', 'نكهات معينة', 'طلب خاص',
+    'تخصيص المناسبة', 'تغيير عدد الأصناف', 'تغيير عدد الاصناف', 'زيادة عدد الأصناف', 'زيادة عدد الاصناف',
+      'السعر النهائي', 'سعر نهائي', 'التسعيرة النهائية', 'عرض سعر', 'quote', 'custom order'])
+    || (includes(text, ['عيد ميلاد', 'يوم ميلاد', 'birthday']) && includes(text, ['ابي', 'أبي', 'ابغى', 'أبغى', 'نبي', 'احجز']));
+}
+
 export function isOpenInRiyadh(now = new Date()) {
   const hour = Number(new Intl.DateTimeFormat('en-US', {
     timeZone: MOZZARO_KNOWLEDGE.timezone, hour: 'numeric', hourCycle: 'h23',
@@ -114,8 +229,16 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     return { reply: null, topics: [], requiresHuman: true, reason: 'human_request' };
   }
 
+  const cateringContext = isCateringQuestion(text);
+  if (cateringContext && isCustomCateringRequest(text)) {
+    return { reply: null, topics: [], requiresHuman: true, reason: 'human_request' };
+  }
+
   const topics = [];
-  const menuTopics = menuTopicsFor(text);
+  const cateringTopics = cateringTopicsFor(text);
+  if (cateringTopics.length) topics.push(...cateringTopics);
+  else if (cateringContext) return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
+  const menuTopics = cateringContext ? [] : menuTopicsFor(text);
   if (menuTopics.length && isMenuAvailabilityQuestion(text, menuTopics)) {
     return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
   }
@@ -142,6 +265,12 @@ export function planWhatsAppReply(rawText, now = new Date()) {
 
   const parts = greeting ? [greeting] : [];
   for (const topic of topics) {
+    if (topic.startsWith('catering_')) {
+      const cateringAnswer = renderCateringTopic(topic);
+      if (cateringAnswer) parts.push(cateringAnswer);
+      else return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
+      continue;
+    }
     if (topic.startsWith('menu_')) {
       const menuAnswer = renderMenuTopic(topic);
       if (menuAnswer) parts.push(menuAnswer);
@@ -159,11 +288,21 @@ export function planWhatsAppReply(rawText, now = new Date()) {
 export function renderApprovedTopics(topics, now = new Date()) {
   const allowed = new Set(['suppliers', 'hours', 'catering', 'orders', 'menu_pizza', 'menu_pasta',
     'menu_appetizers', 'menu_sauces', 'menu_drinks', 'menu_all',
+    'catering_packages', 'catering_types', 'catering_burrata', 'catering_staff', 'catering_addons',
+    'catering_hours', 'catering_inclusions', 'catering_contact',
     ...MOZZARO_KNOWLEDGE.menuItems.map(({ id }) => `menu_${id}`)]);
+  for (const pack of MOZZARO_KNOWLEDGE.cateringPackages) allowed.add(`catering_${pack.id}`);
+  for (const addon of MOZZARO_KNOWLEDGE.cateringAddons) allowed.add(`catering_addon_${addon.id}`);
   if (!Array.isArray(topics) || !topics.length || topics.some((topic) => !allowed.has(topic))) return null;
   const parts = [];
   for (const topic of [...new Set(topics)]) {
-    if (topic.startsWith('menu_')) {
+    if (topic.startsWith('catering_')) {
+      const cateringAnswer = renderCateringTopic(topic);
+      if (!cateringAnswer) return null;
+      parts.push(cateringAnswer);
+    } else if (topic === 'catering') {
+      parts.push(renderCateringTopic('catering_contact'));
+    } else if (topic.startsWith('menu_')) {
       const menuAnswer = renderMenuTopic(topic);
       if (!menuAnswer) return null;
       parts.push(menuAnswer);
