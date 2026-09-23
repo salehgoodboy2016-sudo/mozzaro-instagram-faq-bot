@@ -39,6 +39,31 @@ test('webhook acknowledges incoming messages while auto replies are disabled', a
   assert.equal(response.status, 200); assert.deepEqual(await response.json(), { received: true });
 });
 
+test('WhatsApp webhook logs receipt counts without message or sender data', async (t) => {
+  const secret = 'test-whatsapp-secret';
+  const server = createWebhookServer({ whatsappAppSecret: secret });
+  await new Promise((resolve) => server.listen(0, resolve)); t.after(() => server.close());
+  const payload = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{
+    field: 'messages', value: { messages: [{ from: '+966500000000', text: { body: 'private test message' } }] },
+  }] }] });
+  const originalLog = console.log;
+  let logged = '';
+  console.log = (line) => { logged += line; };
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/webhooks/whatsapp`, {
+      method: 'POST', headers: {
+        'content-type': 'application/json',
+        'x-hub-signature-256': 'sha256=' + createHmac('sha256', secret).update(payload).digest('hex'),
+      }, body: payload,
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { received: true });
+  } finally { console.log = originalLog; }
+  assert.match(logged, /"service":"whatsapp-webhook"/);
+  assert.match(logged, /"messageCount":1/);
+  assert.doesNotMatch(logged, /private test message|\+966500000000/);
+});
+
 test('only incoming messages addressed to the configured business are accepted', () => {
   const event = { id: 'm', senderId: 'customer', recipientId: 'business' };
   assert.equal(isIncoming(event, 'business'), true);

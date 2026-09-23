@@ -139,6 +139,12 @@ export function createWebhookServer(overrides = {}) {
       if (payload?.object !== 'whatsapp_business_account' || !Array.isArray(payload.entry)) {
         res.writeHead(400); res.end('Invalid WhatsApp event'); return;
       }
+      const messageCount = payload.entry.reduce((total, entry) => total + (entry.changes || [])
+        .filter((change) => change.field === 'messages')
+        .reduce((count, change) => count + (Array.isArray(change.value?.messages) ? change.value.messages.length : 0), 0), 0);
+      // Log only aggregate receipt metadata. Never write message text, sender IDs,
+      // phone numbers, or the webhook payload to application logs.
+      console.log(JSON.stringify({ service: 'whatsapp-webhook', received: true, entryCount: payload.entry.length, messageCount }));
       // WhatsApp events are verified and acknowledged only. No message reply or
       // other side effect is performed until a separate automation is enabled.
       res.writeHead(200, { 'Content-Type': 'application/json' });
