@@ -17,6 +17,12 @@ Keep `WHATSAPP_AUTO_REPLY_ENABLED=false`, `WHATSAPP_COEXISTENCE_VERIFIED=false`,
 
 Before a future, separately approved activation, provide a durable `WHATSAPP_DATABASE_URL` (PostgreSQL), a random `WHATSAPP_IDENTITY_KEY` for one-way conversation identifiers, a fresh `WHATSAPP_ACCESS_TOKEN`, and `MOZZARO_ADMIN_API_TOKEN`. Do not put values in Git or chat. The free Render container filesystem cannot reliably store idempotency state across deployments. Obtain permission and verify the live phone and echo webhook before changing the four disabled flags.
 
+The tracked migration runner is `pnpm db:migrate`; startup runs the same
+idempotent migrations under a PostgreSQL advisory lock. See
+`WHATSAPP-DATABASE.md` for the exact Render requirements. Render's free
+PostgreSQL plan currently expires after 30 days, so it is suitable only for a
+connection rehearsal and is not durable production storage.
+
 ## Meta gate
 
 The Meta app dashboard currently offers **Join as Tech Provider**, so that status has not been confirmed as granted. Meta's [Coexistence guide](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users) requires Tech Provider or Solution Partner status, WhatsApp Business app 2.24.17+, a working webhook, Embedded Signup with session logging, and extra subscriptions `history`, `smb_app_state_sync`, and `smb_message_echoes`. [Embedded Signup v4](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/implementation) is the current implementation; v2/v3 retire on 15 October 2026. Advanced Access/App Review is required for published apps. The [overview](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/overview) also states that existing WABAs originally created through the developer app cannot be selected/onboarded directly through Embedded Signup. The origin of Mozzaro's current WABA is not verified. Confirm it with Meta before attempting onboarding.
