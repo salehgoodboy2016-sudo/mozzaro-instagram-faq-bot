@@ -1,0 +1,145 @@
+import { planWhatsAppReply } from './whatsapp-faq.mjs';
+
+export function extractWhatsAppEvents(payload) {
+  const events = [];
+  for (const entry of payload.entry || []) {
+    for (const change of entry.changes || []) {
+      const value = change.value || {};
+      const phoneId = value.metadata?.phone_number_id;
+      if (change.field === 'messages') {
+        for (const message of value.messages || []) {
+          if (!message.id || !message.from || !phoneId) continue;
+          const timestamp = Number(message.timestamp);
+          events.push({ kind: 'incoming', id: `incoming:${message.id}`, phoneId, sender: message.from,
+            at: Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp * 1000) : null,
+            text: message.type === 'text' ? message.text?.body || '' : '', type: message.type });
+        }
+        for (const status of value.statuses || []) {
+          if (status.id) events.push({ kind: 'status', id: `status:${status.id}:${status.status}:${status.timestamp || ''}`,
+            status: status.status });
+        }
+      } else if (change.field === 'smb_message_echoes') {
+        for (const echo of value.message_echoes || []) {
+          const timestamp = Number(echo.timestamp);
+          if (!echo.id || !echo.to || !phoneId) continue;
+          events.push({ kind: 'employee_echo', id: `employee_echo:${echo.id}`, phoneId, recipient: echo.to,
+            at: Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp * 1000) : null });
+        }
+      } else if (['history', 'smb_app_state_sync'].includes(change.field)) {
+        // Acknowledged without logging or importing private chat history and
+        // contacts. Their synchronization is a separate opt-in integration.
+        events.push({ kind: 'coexistence_pending', field: change.field });
+      }
+    }
+  }
+  return events;
+}
+
+export class WhatsAppService {
+  constructor({ store = null, client = null, enabled = false, phoneNumberId, coexistenceVerified = false, now = () => new Date() }) {
+    this.store = store;
+    this.client = client;
+    this.enabled = enabled;
+    this.phoneNumberId = phoneNumberId;
+    this.coexistenceVerified = coexistenceVerified;
+    this.now = now;
+    if (enabled && (!store || !client || !coexistenceVerified || !phoneNumberId)) {
+      throw new Error('WhatsApp automation requires a persistent store, outbound transport, verified Coexistence, and phone ID');
+    }
+  }
+
+  async process(payload) {
+    const events = extractWhatsAppEvents(payload);
+    const outcomes = {};
+    for (const event of events) {
+      const outcome = await this.processEvent(event);
+      outcomes[outcome] = (outcomes[outcome] || 0) + 1;
+    }
+    return { count: events.length, outcomes };
+  }
+
+  async processEvent(event) {
+    if (event.kind === 'coexistence_pending') return 'coexistence_pending';
+    if (!this.store) return 'observed_no_store';
+    if (event.kind === 'status') {
+      const inserted = await this.store.recordEvent({ id: event.id, conversationId: null, type: 'status', at: null });
+      if (inserted) await this.store.setOutcome(event.id, event.status || 'status');
+      return inserted ? 'status_recorded' : 'duplicate';
+    }
+    if (event.kind === 'employee_echo') {
+      if (event.phoneId !== this.phoneNumberId || !event.at) return 'invalid_echo';
+      const conversationId = this.store.conversationId(event.phoneId, event.recipient);
+      const inserted = await this.store.recordEvent({ id: event.id, conversationId, type: 'employee_echo', at: event.at });
+      if (!inserted) return 'duplicate';
+      await this.store.recordEmployeeActivity(conversationId, event.at);
+      await this.store.setOutcome(event.id, 'human_active');
+      return 'employee_activity';
+    }
+    if (event.phoneId !== this.phoneNumberId) return 'other_phone';
+    if (!event.at || event.at > new Date(this.now().getTime() + 5 * 60_000)) return 'invalid_timestamp';
+    const conversationId = this.store.conversationId(event.phoneId, event.sender);
+    const inserted = await this.store.recordEvent({ id: event.id, conversationId, type: 'incoming', at: event.at });
+    if (!inserted) return 'duplicate';
+    const conversation = await this.store.getConversation(conversationId);
+    if (conversation?.last_employee_at && event.at <= new Date(conversation.last_employee_at)) {
+      await this.store.setOutcome(event.id, 'before_employee_activity');
+      return 'before_employee_activity';
+    }
+    if (conversation?.latest_customer_at && event.at < new Date(conversation.latest_customer_at)) {
+      await this.store.setOutcome(event.id, 'out_of_order');
+      return 'out_of_order';
+    }
+    await this.store.recordCustomerActivity(conversationId, event.at);
+    if (conversation?.human_active) {
+      await this.store.setOutcome(event.id, 'human_active');
+      return 'human_active';
+    }
+    const plan = planWhatsAppReply(event.text, this.now());
+    if (plan.requiresHuman) {
+      const firstHandoff = await this.store.claimHumanHandoff(conversationId, plan.reason);
+      if (plan.reason !== 'unknown_question' || !firstHandoff || !this.enabled ||
+        this.now().getTime() - event.at.getTime() >= 24 * 60 * 60_000) {
+        await this.store.setOutcome(event.id, 'human_required');
+        return 'human_required';
+      }
+      await this.store.setOutcome(event.id, 'handoff_reply_reserved');
+      try {
+        await this.client.sendText({ to: event.sender, text: plan.reply, customerMessageAt: event.at, now: this.now() });
+        await this.store.setOutcome(event.id, 'handoff_reply_sent');
+        return 'handoff_reply_sent';
+      } catch (error) {
+        await this.store.setOutcome(event.id, 'handoff_reply_uncertain');
+        console.error(JSON.stringify({ service: 'whatsapp-automation', outcome: 'handoff_reply_uncertain', status: error.status ?? null, code: error.code ?? null }));
+        return 'handoff_reply_uncertain';
+      }
+    }
+    if (!this.enabled) {
+      await this.store.setOutcome(event.id, 'automation_disabled');
+      return 'automation_disabled';
+    }
+    if (this.now().getTime() - event.at.getTime() >= 24 * 60 * 60_000) {
+      await this.store.setOutcome(event.id, 'outside_service_window');
+      return 'outside_service_window';
+    }
+    if (!await this.store.reserveSend(event.id, conversationId, event.at)) {
+      await this.store.setOutcome(event.id, 'send_suppressed');
+      return 'send_suppressed';
+    }
+    try {
+      // A reserved send is never automatically retried. A timeout after Meta
+      // accepts the request is ambiguous and retrying could duplicate a reply.
+      await this.client.sendText({ to: event.sender, text: plan.reply, customerMessageAt: event.at, now: this.now() });
+      await this.store.setOutcome(event.id, 'sent');
+      return 'sent';
+    } catch (error) {
+      await this.store.setOutcome(event.id, 'send_uncertain');
+      console.error(JSON.stringify({ service: 'whatsapp-automation', outcome: 'send_uncertain', status: error.status ?? null, code: error.code ?? null }));
+      return 'send_uncertain';
+    }
+  }
+
+  async handoff(conversationId, active) {
+    if (!this.store || !/^[a-f0-9]{64}$/.test(conversationId)) throw new Error('Invalid conversation');
+    await this.store.setHuman(conversationId, active, active ? 'employee_takeover' : null);
+  }
+}

@@ -9,6 +9,10 @@ import { composeReply } from './faq.mjs';
 import { StateStore } from './state-store.mjs';
 import { InstagramClient } from './instagram-client.mjs';
 import { extractStoryMentions, queueStoryMention } from './story-mentions.mjs';
+import { planWhatsAppReply } from './whatsapp-faq.mjs';
+import { WhatsAppStore } from './whatsapp-store.mjs';
+import { WhatsAppService } from './whatsapp-service.mjs';
+import { WhatsAppClient } from './whatsapp-client.mjs';
 
 // Deployment providers inject secrets through process.env. Merge the local
 // .env file for development without ever requiring that file in production.
@@ -30,6 +34,14 @@ const config = {
   mentionReviewEnabled: env.INSTAGRAM_MENTION_REVIEW_ENABLED === 'true',
   whatsappVerifyToken: env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || '',
   whatsappAppSecret: env.WHATSAPP_WEBHOOK_APP_SECRET || '',
+  whatsappEnabled: env.WHATSAPP_AUTO_REPLY_ENABLED === 'true' && env.WHATSAPP_LIVE_SEND_APPROVED === 'true',
+  whatsappCoexistenceVerified: env.WHATSAPP_COEXISTENCE_VERIFIED === 'true',
+  whatsappEmployeeEchoVerified: env.WHATSAPP_EMPLOYEE_ECHO_VERIFIED === 'true',
+  whatsappPhoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID || '816217614914860',
+  whatsappAccessToken: env.WHATSAPP_ACCESS_TOKEN || '',
+  whatsappDatabaseUrl: env.WHATSAPP_DATABASE_URL || '',
+  whatsappIdentityKey: env.WHATSAPP_IDENTITY_KEY || '',
+  adminApiToken: env.MOZZARO_ADMIN_API_TOKEN || '',
 };
 const store = new StateStore(config.stateFile, config.repeatCooldownMs);
 await store.load();
@@ -54,6 +66,23 @@ function verifySignature(raw, signature, appSecret) {
   const expected = createHmac('sha256', appSecret).update(raw).digest('hex');
   const actual = signature.slice(7);
   return actual.length === expected.length && timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
+}
+
+function safeTokenEqual(candidate, expected) {
+  if (!candidate || !expected) return false;
+  const actual = createHmac('sha256', 'mozzaro-admin').update(candidate).digest();
+  const known = createHmac('sha256', 'mozzaro-admin').update(expected).digest();
+  return timingSafeEqual(actual, known);
+}
+
+async function readLimitedBody(req, maxBytes = 1024 * 1024) {
+  const chunks = []; let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) return null;
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 function extractEvents(payload) {
@@ -107,7 +136,9 @@ async function processEvent(event) {
 
 export function createWebhookServer(overrides = {}) {
   const handlerConfig = { ...config, ...overrides };
+  const whatsappService = overrides.whatsappService || null;
   return createServer(async (req, res) => {
+    try {
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -115,7 +146,39 @@ export function createWebhookServer(overrides = {}) {
         autoReplyEnabled: handlerConfig.enabled,
         mentionRepostEnabled: handlerConfig.mentionRepostEnabled,
         whatsappWebhookConfigured: Boolean(handlerConfig.whatsappVerifyToken && handlerConfig.whatsappAppSecret),
+        whatsappAutoReplyEnabled: handlerConfig.whatsappEnabled,
       })); return;
+    }
+    if (new URL(req.url || '/', 'http://localhost').pathname.startsWith('/admin/whatsapp/')) {
+      const authorized = safeTokenEqual((req.headers.authorization || '').replace(/^Bearer /i, ''), handlerConfig.adminApiToken);
+      if (!authorized) { res.writeHead(401); res.end('Unauthorized'); return; }
+      const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+      if (req.method === 'GET' && pathname === '/admin/whatsapp/status') {
+        const recent = whatsappService?.store ? await whatsappService.store.recent() : [];
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ whatsappAutoReplyEnabled: handlerConfig.whatsappEnabled,
+          instagramAutoReplyEnabled: handlerConfig.enabled,
+          coexistenceVerified: handlerConfig.whatsappCoexistenceVerified,
+          persistentStoreReady: Boolean(whatsappService?.store), recent })); return;
+      }
+      if (req.method === 'POST' && ['preview', 'handoff'].includes(pathname.split('/').pop())) {
+        const raw = await readLimitedBody(req);
+        if (!raw) { res.writeHead(413); res.end('Payload too large'); return; }
+        let body; try { body = JSON.parse(raw.toString('utf8')); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+        if (pathname.endsWith('/preview')) {
+          if (typeof body.text !== 'string' || body.text.length > 4096) { res.writeHead(400); res.end('Invalid text'); return; }
+          const plan = planWhatsAppReply(body.text);
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ reply: plan.reply, requiresHuman: plan.requiresHuman, topics: plan.topics })); return;
+        }
+        if (!whatsappService?.store || !/^[a-f0-9]{64}$/.test(body.conversationId) || typeof body.active !== 'boolean') {
+          res.writeHead(400); res.end('Invalid handoff'); return;
+        }
+        await whatsappService.handoff(body.conversationId, body.active);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ updated: true })); return;
+      }
+      res.writeHead(404); res.end('Not found'); return;
     }
     if (req.method === 'GET' && req.url?.startsWith('/webhooks/instagram')) {
       const url = new URL(req.url, 'http://localhost');
@@ -128,7 +191,7 @@ export function createWebhookServer(overrides = {}) {
       const valid = Boolean(handlerConfig.whatsappVerifyToken)
         && url.searchParams.get('hub.mode') === 'subscribe'
         && Boolean(url.searchParams.get('hub.challenge'))
-        && url.searchParams.get('hub.verify_token') === handlerConfig.whatsappVerifyToken;
+        && safeTokenEqual(url.searchParams.get('hub.verify_token'), handlerConfig.whatsappVerifyToken);
       res.writeHead(valid ? 200 : 403, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end(valid ? (url.searchParams.get('hub.challenge') || '') : 'Forbidden'); return;
     }
@@ -137,13 +200,8 @@ export function createWebhookServer(overrides = {}) {
     if (!isInstagramPost && !isWhatsAppPost) { res.writeHead(404); res.end('Not found'); return; }
     if (isWhatsAppPost) {
       if (!handlerConfig.whatsappAppSecret) { res.writeHead(503); res.end('Webhook not configured'); return; }
-      const chunks = []; let size = 0;
-      for await (const chunk of req) {
-        size += chunk.length;
-        if (size > 1024 * 1024) { res.writeHead(413); res.end('Payload too large'); return; }
-        chunks.push(chunk);
-      }
-      const raw = Buffer.concat(chunks);
+      const raw = await readLimitedBody(req, 16 * 1024 * 1024);
+      if (!raw) { res.writeHead(413); res.end('Payload too large'); return; }
       if (!verifySignature(raw, req.headers['x-hub-signature-256'], handlerConfig.whatsappAppSecret)) {
         logWhatsAppReject('invalid_signature', raw.length);
         res.writeHead(401); res.end('Invalid signature'); return;
@@ -163,8 +221,15 @@ export function createWebhookServer(overrides = {}) {
       // Log only aggregate receipt metadata. Never write message text, sender IDs,
       // phone numbers, or the webhook payload to application logs.
       console.log(JSON.stringify({ service: 'whatsapp-webhook', received: true, entryCount: payload.entry.length, messageCount }));
-      // WhatsApp events are verified and acknowledged only. No message reply or
-      // other side effect is performed until a separate automation is enabled.
+      if (whatsappService) {
+        try {
+          const result = await whatsappService.process(payload);
+          console.log(JSON.stringify({ service: 'whatsapp-automation', eventCount: result.count, outcomes: result.outcomes }));
+        } catch {
+          console.error(JSON.stringify({ service: 'whatsapp-automation', outcome: 'processing_failed' }));
+          res.writeHead(503); res.end('Processing unavailable'); return;
+        }
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ received: true })); return;
     }
@@ -180,12 +245,29 @@ export function createWebhookServer(overrides = {}) {
       queueStoryMention(mention, handlerConfig.mentionReviewFile).catch((error) => console.error(JSON.stringify({ mentionError: error.message })));
     }
     for (const event of extractEvents(payload)) processEvent(event).catch((error) => console.error(JSON.stringify({ webhookError: error.message, status: error.details?.status ?? null })));
+    } catch {
+      console.error(JSON.stringify({ service: 'webhook', outcome: 'unexpected_error' }));
+      if (!res.headersSent) { res.writeHead(503); res.end('Service unavailable'); }
+      else if (!res.writableEnded) res.end();
+    }
   });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-  const server = createWebhookServer();
-  server.listen(config.port, () => console.log(JSON.stringify({ service: 'instagram-faq-webhook', port: config.port, autoReplyEnabled: config.enabled })));
+  if (config.whatsappEnabled && (!config.whatsappCoexistenceVerified || !config.whatsappEmployeeEchoVerified || !config.whatsappDatabaseUrl || !config.whatsappIdentityKey || !config.whatsappAccessToken)) {
+    throw new Error('WhatsApp automation prerequisites are incomplete');
+  }
+  const whatsappStore = config.whatsappDatabaseUrl && config.whatsappIdentityKey
+    ? new WhatsAppStore({ databaseUrl: config.whatsappDatabaseUrl, identityKey: config.whatsappIdentityKey }) : null;
+  if (whatsappStore) await whatsappStore.initialize();
+  const whatsappClient = new WhatsAppClient({ token: config.whatsappAccessToken,
+    phoneNumberId: config.whatsappPhoneNumberId, enabled: config.whatsappEnabled && config.whatsappCoexistenceVerified });
+  const whatsappService = new WhatsAppService({ store: whatsappStore, client: whatsappClient,
+    enabled: config.whatsappEnabled, coexistenceVerified: config.whatsappCoexistenceVerified,
+    phoneNumberId: config.whatsappPhoneNumberId });
+  const server = createWebhookServer({ whatsappService });
+  server.listen(config.port, () => console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,
+    instagramAutoReplyEnabled: config.enabled, whatsappAutoReplyEnabled: config.whatsappEnabled })));
 }
 
 export { composeReply, extractEvents, processEvent, config };
