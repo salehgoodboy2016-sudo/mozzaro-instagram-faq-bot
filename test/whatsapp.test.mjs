@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { planWhatsAppReply, isOpenInRiyadh } from '../src/whatsapp-faq.mjs';
+import { planWhatsAppReply, isOpenInRiyadh, renderApprovedTopics } from '../src/whatsapp-faq.mjs';
 import { WhatsAppClient, MockWhatsAppClient } from '../src/whatsapp-client.mjs';
 import { WhatsAppService, extractWhatsAppEvents } from '../src/whatsapp-service.mjs';
 import { ClaudeClient } from '../src/claude-client.mjs';
 import { createWebhookServer, selfTestWhatsAppChallenge } from '../src/webhook-server.mjs';
 import { buildCoexistenceLoginOptions, parseCoexistenceSession } from '../src/coexistence-signup.mjs';
+import { MOZZARO_KNOWLEDGE, MOZZARO_AI_TOPICS } from '../src/mozzaro-knowledge.mjs';
 
 const now = new Date('2026-09-23T19:00:00Z');
 const phoneId = '816217614914860';
@@ -67,6 +68,63 @@ test('complaints and unknown questions require human attention and safe fallback
   const unknown = planWhatsAppReply('هل عندكم خصومات اليوم؟');
   assert.equal(unknown.requiresHuman, true);
   assert.match(unknown.reply, /بنحوّل استفسارك للفريق/);
+});
+
+test('menu names and SAR prices exactly match the supplied official PDF', () => {
+  const expected = [
+    ['pizza_margherita', 'pizza', 'مارجريتا', 'Margherita', 29],
+    ['pizza_mozzaro', 'pizza', 'بيتزا موزارو', 'Mozzaro Pizza', 34],
+    ['pizza_pepperoni', 'pizza', 'بيبروني', 'Pepperoni', 32],
+    ['pizza_pesto', 'pizza', 'بيستو', 'Pesto', 33],
+    ['pizza_rocotto', 'pizza', 'ريكوتا', 'Rocotto', 32],
+    ['pizza_burrata', 'pizza', 'بوراتا', 'Burrata', 43],
+    ['pizza_month', 'pizza', 'بيتزا الشهر', 'Pizza of the Month', null],
+    ['pasta_pink_rigatoni', 'pasta', 'بينك ريغاتوني', 'Pink Rigatoni', 32],
+    ['pasta_truffle_rigatoni', 'pasta', 'ترافل ريغاتوني', 'Truffle Rigatoni', 34],
+    ['pasta_pesto_casarecce', 'pasta', 'بيستو كازاريتشي', 'Pesto Casarecce', 36],
+    ['appetizer_parmesan_potato_balls', 'appetizers', 'كرات البطاطس بالبارميزان', 'Parmesan Potato Balls', 18],
+    ['appetizer_ricotta_cheese_balls', 'appetizers', 'كرات جبنة الريكوتا', 'Ricotta Cheese Balls', 18],
+    ['appetizer_mac_cheese_balls', 'appetizers', 'كرات ماك آند تشيز', 'Mac & Cheese Balls', 18],
+    ['sauce_hot_honey', 'sauces', 'عسل حار', 'Hot Honey', 4],
+    ['sauce_spicy_olive_oil', 'sauces', 'زيت زيتون حار', 'Spicy Olive Oil', 4],
+    ['sauce_truffle_oil', 'sauces', 'زيت الترفل', 'Truffle Oil', 4],
+    ['drink_soft_drinks', 'drinks', 'مشروبات غازية', 'Soft Drinks', 3],
+  ];
+  assert.deepEqual(MOZZARO_KNOWLEDGE.menuItems.map(({ id, category, nameAr, nameEn, priceSar }) =>
+    [id, category, nameAr, nameEn, priceSar]), expected);
+  assert.equal(MOZZARO_KNOWLEDGE.menuItems.length, 17);
+  assert.equal(MOZZARO_KNOWLEDGE.menuItems.find(({ id }) => id === 'pizza_month').priceSar, null);
+});
+
+test('menu FAQ understands Arabic and English item names, categories, and routes unknown details', () => {
+  assert.match(planWhatsAppReply('كم سعر بيتزا المارجريتا؟').reply, /Margherita.*29 ريال/);
+  assert.match(planWhatsAppReply('How much is Truffle Rigatoni?').reply, /Truffle Rigatoni.*34 ريال/);
+  assert.match(planWhatsAppReply('كم أسعار البيتزا؟').reply, /Burrata.*43 ريال/);
+  assert.match(planWhatsAppReply('وش عندكم من صوصات ومشروبات؟').reply, /Spicy Olive Oil.*4 ريال/);
+  assert.match(planWhatsAppReply('وش أسعار المنيو كامل؟').reply, /Soft Drinks.*3 ريال/);
+  const month = planWhatsAppReply('كم سعر بيتزا الشهر؟');
+  assert.equal(month.requiresHuman, true);
+  assert.match(month.reply, /ما لها سعر ثابت/);
+  assert.equal(planWhatsAppReply('هل بيتزا المارجريتا متوفرة الآن؟').requiresHuman, true);
+  assert.equal(planWhatsAppReply('هل فيها مكسرات؟').requiresHuman, true);
+});
+
+test('Claude allowlisted menu topics render only exact reviewed menu facts', () => {
+  assert.equal(MOZZARO_AI_TOPICS.includes('menu_pizza_margherita'), true);
+  assert.equal(renderApprovedTopics(['menu_pizza_margherita']).reply, 'مارجريتا (Margherita): 29 ريال.');
+  assert.match(renderApprovedTopics(['menu_sauces']).reply, /Hot Honey.*4 ريال.*Spicy Olive Oil.*4 ريال.*Truffle Oil.*4 ريال/);
+  assert.equal(renderApprovedTopics(['menu_pizza_month']), null);
+  assert.equal(renderApprovedTopics(['menu_unverified_item']), null);
+});
+
+test('Claude menu topic flows through Render approved copy without free-form generation', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const aiClient = { enabled: true, inputUsdPerMillion: 1, outputUsdPerMillion: 5,
+    estimateUsd: () => 0.001, answer: async () => ({ action: 'answer', topics: ['menu_pasta_truffle_rigatoni'], inputTokens: 8, outputTokens: 4 }) };
+  const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 5, knowledge: MOZZARO_KNOWLEDGE,
+    phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+  assert.deepEqual((await service.process(sample('كم سعر ترافل ريغاتوني؟', 'ai-menu'))).outcomes, { sent: 1 });
+  assert.equal(client.sent[0].text, 'ترافل ريغاتوني (Truffle Rigatoni): 34 ريال.');
 });
 
 test('Claude adapter uses official Messages API shape and validates safe JSON output', async () => {

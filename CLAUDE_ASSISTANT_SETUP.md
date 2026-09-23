@@ -2,6 +2,8 @@
 
 The assistant is implemented in `src/claude-client.mjs` and uses Anthropic's official Messages API. It is disabled unless `WHATSAPP_CLAUDE_AI_ENABLED=true`, an API key and model are configured, both per-token prices are set, and the monthly USD cap is greater than zero. The current pilot allowlist and WhatsApp send gates still apply.
 
+The editable approved facts and menu live in `src/mozzaro-knowledge.mjs`. Menu names and SAR prices are transcribed from the official menu PDF supplied on 2026-09-24. `priceSar: null` for Pizza of the Month means the PDF has no fixed price; customers are directed to staff. Ingredients, allergens, current availability, and other unverified claims remain absent and must be handled by a person. WhatsApp FAQ fallback renders menu answers from this same reviewed data. Instagram automation remains independent and does not read the menu topic renderer.
+
 Claude classifies a message into a small set of approved topics. The Render service constructs the outgoing answer from the reviewed copy in `src/mozzaro-knowledge.mjs`; Claude never writes customer-facing facts. Missing or ambiguous questions, employee requests, complaints, refunds, and complex orders activate human handoff. The existing FAQ remains the fallback if Anthropic is unavailable. Failed/uncertain outbound sends are not retried automatically.
 
 The assistant sends at most six recent message turns for the same allowlisted conversation to Anthropic. Render stores that short context in PostgreSQL and expires it after 24 hours. Logs contain no message text, customer number, key, or signing secret. Monthly token/cost totals and the configured cap are visible in the existing authenticated WhatsApp admin status response.

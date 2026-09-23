@@ -1,5 +1,7 @@
 // Native Anthropic Messages API adapter. Disabled unless explicitly configured;
 // this code never calls Claude Code or any local agent runtime.
+import { MOZZARO_AI_TOPICS } from './mozzaro-knowledge.mjs';
+
 export class ClaudeClient {
   constructor({ apiKey, model, enabled = false, monthlyLimitUsd = 0,
     inputUsdPerMillion = 0, outputUsdPerMillion = 0, fetchImpl = fetch, timeoutMs = 8000 }) {
@@ -25,8 +27,8 @@ export class ClaudeClient {
     const system = [
       'أنت مساعد موزارو لخدمة العملاء عبر واتساب. أجب بلهجة سعودية ودودة ومختصرة.',
       'استخدم الحقائق الموجودة فقط داخل قاعدة المعرفة. لا تستنتج أو تخترع أسعاراً أو أصنافاً أو مكونات أو توفرًا أو سياسات.',
-      'اختر فقط من الموضوعات المعتمدة: suppliers (الموردون)، hours (ساعات العمل)، catering (الكيترنق)، orders (الطلب والتواصل).',
-      'إذا لم يكن السؤال مغطى بالكامل بموضوع معتمد، أو كان شكوى أو استرجاعاً أو طلباً معقداً أو طلب موظف، اختر handoff.',
+      `اختر فقط معرفات الموضوعات المعتمدة التالية: ${MOZZARO_AI_TOPICS.join(', ')}. استخدم معرف الصنف المطابق لسؤال عن اسمه أو سعره، أو معرف الفئة إذا سأل عن أسعار الفئة.`,
+      'لا تجب عن التوفر الحالي أو المكونات أو مسببات الحساسية أو أي معلومة غير موجودة صراحة في قاعدة المعرفة. بيتزا الشهر بلا سعر ثابت؛ اختر handoff لطلب تفاصيلها الحالية. إذا كان السؤال غير مغطى بالكامل، أو كان شكوى أو استرجاعاً أو طلباً معقداً أو طلب موظف، اختر handoff.',
       'لا تنشئ نص إجابة ولا تضف موضوعات. أعد JSON فقط: {"action":"answer"|"handoff","topics":["hours"]}. لا تذكر أنك نموذج ذكاء اصطناعي.',
       `قاعدة المعرفة المعتمدة: ${JSON.stringify(knowledge)}`,
     ].join('\n');
@@ -45,7 +47,7 @@ export class ClaudeClient {
     }
     const text = (body.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('').trim();
     let result; try { result = JSON.parse(text); } catch { throw new Error('Claude returned invalid structured response'); }
-    const allowedTopics = new Set(['suppliers', 'hours', 'catering', 'orders']);
+    const allowedTopics = new Set(MOZZARO_AI_TOPICS);
     if (!['answer', 'handoff'].includes(result.action) || !Array.isArray(result.topics)
       || result.topics.some((topic) => !allowedTopics.has(topic)) || result.topics.length > 4
       || (result.action === 'answer' && result.topics.length === 0)) {
