@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 import { planWhatsAppReply, isOpenInRiyadh } from '../src/whatsapp-faq.mjs';
 import { WhatsAppClient, MockWhatsAppClient } from '../src/whatsapp-client.mjs';
 import { WhatsAppService, extractWhatsAppEvents } from '../src/whatsapp-service.mjs';
-import { createWebhookServer } from '../src/webhook-server.mjs';
+import { createWebhookServer, selfTestWhatsAppChallenge } from '../src/webhook-server.mjs';
 import { buildCoexistenceLoginOptions, parseCoexistenceSession } from '../src/coexistence-signup.mjs';
 
 const now = new Date('2026-09-23T19:00:00Z');
@@ -164,6 +164,13 @@ test('admin preview requires its token and cannot activate automation', async (t
   assert.match((await response.json()).reply, /12 ظهرًا/);
   const status = await fetch(`${base}/admin/whatsapp/status`, { headers: { Authorization: 'Bearer admin-test' } });
   assert.equal((await status.json()).whatsappAutoReplyEnabled, false);
+});
+
+test('deployment challenge self-test checks configured token without logging it', async (t) => {
+  const server = createWebhookServer({ whatsappVerifyToken: 'private-test-token' });
+  await new Promise((resolve) => server.listen(0, resolve)); t.after(() => server.close());
+  assert.equal(await selfTestWhatsAppChallenge(server.address().port, 'private-test-token'), true);
+  assert.equal(await selfTestWhatsAppChallenge(server.address().port, 'wrong-token'), false);
 });
 
 test('prepared signup requests only Coexistence and validates Meta session origin and WABA', () => {

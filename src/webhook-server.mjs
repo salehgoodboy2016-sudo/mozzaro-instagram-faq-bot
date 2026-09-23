@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdir, appendFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -73,6 +73,17 @@ function safeTokenEqual(candidate, expected) {
   const actual = createHmac('sha256', 'mozzaro-admin').update(candidate).digest();
   const known = createHmac('sha256', 'mozzaro-admin').update(expected).digest();
   return timingSafeEqual(actual, known);
+}
+
+export async function selfTestWhatsAppChallenge(port, verifyToken, fetchImpl = fetch) {
+  if (!verifyToken) return false;
+  const challenge = randomBytes(16).toString('hex');
+  const url = new URL(`http://127.0.0.1:${port}/webhooks/whatsapp`);
+  url.searchParams.set('hub.mode', 'subscribe');
+  url.searchParams.set('hub.verify_token', verifyToken);
+  url.searchParams.set('hub.challenge', challenge);
+  const response = await fetchImpl(url, { signal: AbortSignal.timeout(5000) });
+  return response.status === 200 && await response.text() === challenge;
 }
 
 async function readLimitedBody(req, maxBytes = 1024 * 1024) {
@@ -266,8 +277,13 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     enabled: config.whatsappEnabled, coexistenceVerified: config.whatsappCoexistenceVerified,
     phoneNumberId: config.whatsappPhoneNumberId });
   const server = createWebhookServer({ whatsappService });
-  server.listen(config.port, () => console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,
-    instagramAutoReplyEnabled: config.enabled, whatsappAutoReplyEnabled: config.whatsappEnabled })));
+  server.listen(config.port, () => {
+    console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,
+      instagramAutoReplyEnabled: config.enabled, whatsappAutoReplyEnabled: config.whatsappEnabled }));
+    selfTestWhatsAppChallenge(config.port, config.whatsappVerifyToken)
+      .then((accepted) => console.log(JSON.stringify({ service: 'whatsapp-webhook', challengeSelfTest: accepted ? 'passed' : 'failed' })))
+      .catch(() => console.error(JSON.stringify({ service: 'whatsapp-webhook', challengeSelfTest: 'error' })));
+  });
 }
 
 export { composeReply, extractEvents, processEvent, config };
