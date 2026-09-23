@@ -53,6 +53,7 @@ const config = {
   kapsoCoexistenceVerified: env.KAPSO_COEXISTENCE_VERIFIED === 'true',
   kapsoEmployeeEchoVerified: env.KAPSO_EMPLOYEE_ECHO_VERIFIED === 'true',
   whatsappAutomationAllowlist: String(env.WHATSAPP_AUTOMATION_ALLOWLIST || '').split(',').map((value) => value.trim()).filter(Boolean),
+  whatsappResumeSender: String(env.WHATSAPP_RESUME_SENDER || '').trim(),
   kapsoEnabled: env.WHATSAPP_AUTOMATION_ENABLED === 'true'
     && env.KAPSO_AUTO_REPLY_ENABLED === 'true'
     && env.KAPSO_LIVE_SEND_APPROVED === 'true',
@@ -359,6 +360,12 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const kapsoService = new WhatsAppService({ store: whatsappStore, client: kapsoClient,
     enabled: config.kapsoEnabled, coexistenceVerified: config.kapsoCoexistenceVerified,
     phoneNumberId: config.kapsoPhoneNumberId, allowlist: config.whatsappAutomationAllowlist });
+  if (whatsappStore && config.whatsappResumeSender) {
+    const resumePhoneId = config.kapsoPhoneNumberId || config.whatsappPhoneNumberId;
+    const resumeConversationId = whatsappStore.conversationId(resumePhoneId, config.whatsappResumeSender);
+    await kapsoService.handoff(resumeConversationId, false);
+    console.log(JSON.stringify({ service: 'whatsapp-handoff', outcome: 'resumed', conversationIdHash: createHash('sha256').update(resumeConversationId).digest('hex').slice(0, 16) }));
+  }
   const server = createWebhookServer({ whatsappService, kapsoService });
   server.listen(config.port, () => {
     console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,
