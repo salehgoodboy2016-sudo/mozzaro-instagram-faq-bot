@@ -270,7 +270,10 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   }
   const whatsappStore = config.whatsappDatabaseUrl && config.whatsappIdentityKey
     ? new WhatsAppStore({ databaseUrl: config.whatsappDatabaseUrl, identityKey: config.whatsappIdentityKey }) : null;
-  if (whatsappStore) await whatsappStore.initialize();
+  if (whatsappStore) {
+    const appliedMigrations = await whatsappStore.initialize();
+    console.log(JSON.stringify({ service: 'whatsapp-database', status: 'ready', appliedCount: appliedMigrations.length }));
+  }
   const whatsappClient = new WhatsAppClient({ token: config.whatsappAccessToken,
     phoneNumberId: config.whatsappPhoneNumberId, enabled: config.whatsappEnabled && config.whatsappCoexistenceVerified });
   const whatsappService = new WhatsAppService({ store: whatsappStore, client: whatsappClient,
