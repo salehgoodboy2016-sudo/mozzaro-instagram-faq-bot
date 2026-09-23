@@ -28,6 +28,8 @@ const config = {
   mentionReviewFile: env.INSTAGRAM_MENTION_REVIEW_FILE || './data/story-mention-review.jsonl',
   mentionRepostEnabled: env.INSTAGRAM_MENTION_REPOST_ENABLED === 'true',
   mentionReviewEnabled: env.INSTAGRAM_MENTION_REVIEW_ENABLED === 'true',
+  whatsappVerifyToken: env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || '',
+  whatsappAppSecret: env.WHATSAPP_WEBHOOK_APP_SECRET || '',
 };
 const store = new StateStore(config.stateFile, config.repeatCooldownMs);
 await store.load();
@@ -95,7 +97,12 @@ export function createWebhookServer(overrides = {}) {
   return createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, autoReplyEnabled: handlerConfig.enabled, mentionRepostEnabled: handlerConfig.mentionRepostEnabled })); return;
+      res.end(JSON.stringify({
+        ok: true,
+        autoReplyEnabled: handlerConfig.enabled,
+        mentionRepostEnabled: handlerConfig.mentionRepostEnabled,
+        whatsappWebhookConfigured: Boolean(handlerConfig.whatsappVerifyToken && handlerConfig.whatsappAppSecret),
+      })); return;
     }
     if (req.method === 'GET' && req.url?.startsWith('/webhooks/instagram')) {
       const url = new URL(req.url, 'http://localhost');
@@ -103,7 +110,40 @@ export function createWebhookServer(overrides = {}) {
       res.writeHead(valid ? 200 : 403, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end(valid ? (url.searchParams.get('hub.challenge') || '') : 'Forbidden'); return;
     }
-    if (req.method !== 'POST' || !req.url?.startsWith('/webhooks/instagram')) { res.writeHead(404); res.end('Not found'); return; }
+    if (req.method === 'GET' && new URL(req.url || '/', 'http://localhost').pathname === '/webhooks/whatsapp') {
+      const url = new URL(req.url, 'http://localhost');
+      const valid = Boolean(handlerConfig.whatsappVerifyToken)
+        && url.searchParams.get('hub.mode') === 'subscribe'
+        && Boolean(url.searchParams.get('hub.challenge'))
+        && url.searchParams.get('hub.verify_token') === handlerConfig.whatsappVerifyToken;
+      res.writeHead(valid ? 200 : 403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(valid ? (url.searchParams.get('hub.challenge') || '') : 'Forbidden'); return;
+    }
+    const isInstagramPost = req.method === 'POST' && req.url?.startsWith('/webhooks/instagram');
+    const isWhatsAppPost = req.method === 'POST' && new URL(req.url || '/', 'http://localhost').pathname === '/webhooks/whatsapp';
+    if (!isInstagramPost && !isWhatsAppPost) { res.writeHead(404); res.end('Not found'); return; }
+    if (isWhatsAppPost) {
+      if (!handlerConfig.whatsappAppSecret) { res.writeHead(503); res.end('Webhook not configured'); return; }
+      const chunks = []; let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 1024 * 1024) { res.writeHead(413); res.end('Payload too large'); return; }
+        chunks.push(chunk);
+      }
+      const raw = Buffer.concat(chunks);
+      if (!verifySignature(raw, req.headers['x-hub-signature-256'], handlerConfig.whatsappAppSecret)) {
+        res.writeHead(401); res.end('Invalid signature'); return;
+      }
+      let payload;
+      try { payload = JSON.parse(raw.toString('utf8')); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+      if (payload?.object !== 'whatsapp_business_account' || !Array.isArray(payload.entry)) {
+        res.writeHead(400); res.end('Invalid WhatsApp event'); return;
+      }
+      // WhatsApp events are verified and acknowledged only. No message reply or
+      // other side effect is performed until a separate automation is enabled.
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ received: true })); return;
+    }
     if (!handlerConfig.appSecret) { res.writeHead(503); res.end('Webhook not configured'); return; }
     const chunks = []; let size = 0;
     for await (const chunk of req) { size += chunk.length; if (size > 1024 * 1024) { res.writeHead(413); res.end('Payload too large'); return; } chunks.push(chunk); }
