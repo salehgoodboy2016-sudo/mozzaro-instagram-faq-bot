@@ -35,6 +35,19 @@ const store = new StateStore(config.stateFile, config.repeatCooldownMs);
 await store.load();
 const client = config.accessToken ? new InstagramClient({ token: config.accessToken, accountId: config.accountId }) : null;
 const inflight = new Set();
+let lastWhatsAppRejectLogAt = 0;
+let suppressedWhatsAppRejectLogs = 0;
+
+function logWhatsAppReject(reason, payloadBytes) {
+  const now = Date.now();
+  if (now - lastWhatsAppRejectLogAt < 60_000) { suppressedWhatsAppRejectLogs += 1; return; }
+  console.warn(JSON.stringify({
+    service: 'whatsapp-webhook', outcome: 'rejected', reason,
+    payloadBytes, suppressedSinceLastLog: suppressedWhatsAppRejectLogs,
+  }));
+  lastWhatsAppRejectLogAt = now;
+  suppressedWhatsAppRejectLogs = 0;
+}
 
 function verifySignature(raw, signature, appSecret) {
   if (!appSecret || typeof signature !== 'string' || !/^sha256=[a-f0-9]{64}$/.test(signature)) return false;
@@ -132,11 +145,16 @@ export function createWebhookServer(overrides = {}) {
       }
       const raw = Buffer.concat(chunks);
       if (!verifySignature(raw, req.headers['x-hub-signature-256'], handlerConfig.whatsappAppSecret)) {
+        logWhatsAppReject('invalid_signature', raw.length);
         res.writeHead(401); res.end('Invalid signature'); return;
       }
       let payload;
-      try { payload = JSON.parse(raw.toString('utf8')); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+      try { payload = JSON.parse(raw.toString('utf8')); } catch {
+        logWhatsAppReject('invalid_json', raw.length);
+        res.writeHead(400); res.end('Invalid JSON'); return;
+      }
       if (payload?.object !== 'whatsapp_business_account' || !Array.isArray(payload.entry)) {
+        logWhatsAppReject('invalid_event_shape', raw.length);
         res.writeHead(400); res.end('Invalid WhatsApp event'); return;
       }
       const messageCount = payload.entry.reduce((total, entry) => total + (entry.changes || [])

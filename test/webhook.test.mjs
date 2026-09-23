@@ -64,6 +64,24 @@ test('WhatsApp webhook logs receipt counts without message or sender data', asyn
   assert.doesNotMatch(logged, /private test message|\+966500000000/);
 });
 
+test('WhatsApp webhook logs rejected signatures without request content', async (t) => {
+  const server = createWebhookServer({ whatsappAppSecret: 'test-whatsapp-secret' });
+  await new Promise((resolve) => server.listen(0, resolve)); t.after(() => server.close());
+  const originalWarn = console.warn;
+  let logged = '';
+  console.warn = (line) => { logged += line; };
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/webhooks/whatsapp`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=' + '0'.repeat(64) },
+      body: '{"secret customer message":true}',
+    });
+    assert.equal(response.status, 401);
+  } finally { console.warn = originalWarn; }
+  assert.match(logged, /"outcome":"rejected"/);
+  assert.match(logged, /"reason":"invalid_signature"/);
+  assert.doesNotMatch(logged, /secret customer message/);
+});
+
 test('only incoming messages addressed to the configured business are accepted', () => {
   const event = { id: 'm', senderId: 'customer', recipientId: 'business' };
   assert.equal(isIncoming(event, 'business'), true);
