@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdir, appendFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -251,11 +251,25 @@ export function createWebhookServer(overrides = {}) {
       }
       const events = extractKapsoEvents(eventName, payload, String(req.headers['x-idempotency-key'] || ''));
       const messageCount = events.filter((event) => event.kind === 'incoming').length;
-      console.log(JSON.stringify({ service: 'kapso-webhook', received: true, eventName, eventCount: events.length, messageCount }));
+      const kapsoPayloads = payload?.batch === true && Array.isArray(payload.data) ? payload.data : [payload];
+      const diagnostics = kapsoPayloads.map((item) => {
+        const message = item?.message || {};
+        const id = String(message.id || req.headers['x-idempotency-key'] || '');
+        return {
+          eventName,
+          origin: message.kapso?.origin || null,
+          eventIdHash: id ? createHash('sha256').update(id).digest('hex').slice(0, 16) : null,
+        };
+      });
+      console.log(JSON.stringify({ service: 'kapso-webhook', received: true, eventName, eventCount: events.length, messageCount, diagnostics }));
       if (kapsoService) {
         try {
           const result = await kapsoService.processEvents(events);
-          console.log(JSON.stringify({ service: 'kapso-automation', eventCount: result.count, outcomes: result.outcomes }));
+          const handoffOutcomes = ['employee_activity', 'human_active', 'human_required', 'handoff_reply_reserved', 'handoff_reply_sent', 'handoff_reply_uncertain'];
+          const handoffResult = Object.fromEntries(handoffOutcomes
+            .filter((name) => result.outcomes[name])
+            .map((name) => [name, result.outcomes[name]]));
+          console.log(JSON.stringify({ service: 'kapso-automation', eventCount: result.count, outcomes: result.outcomes, handoffResult }));
         } catch {
           console.error(JSON.stringify({ service: 'kapso-automation', outcome: 'processing_failed' }));
           res.writeHead(503); res.end('Processing unavailable'); return;
