@@ -69,14 +69,18 @@ function isOpenNow(date = new Date()) {
 
 export function composeReply(rawText, now = new Date(), topicFilter = null) {
   const result = classifyFaq(rawText);
-  if (result.sensitive || result.topics.length === 0 && !result.greeting) {
+  if (result.sensitive) {
     return { ...result, reply: null, requiresHuman: result.sensitive };
   }
 
   const selectedTopics = topicFilter ? result.topics.filter((topic) => topicFilter.includes(topic)) : result.topics;
+  if (selectedTopics.length === 0) {
+    return { ...result, reply: null, requiresHuman: false };
+  }
+
   const parts = [];
-  if (result.greeting === 'islamic') parts.push('وعليكم السلام ورحمة الله وبركاته');
-  if (result.greeting === 'casual') parts.push('أهلين');
+  if (result.greeting === 'islamic') parts.push('وعليكم السلام،');
+  if (result.greeting === 'casual') parts.push('أهلين،');
 
   for (const topic of selectedTopics) {
     if (topic === TOPICS.hours && /مفتوح|فاتحين|الان|الحين|open|now/.test(result.normalized)) {

@@ -2,8 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { composeReply, classifyFaq } from '../src/faq.mjs';
 
-test('Islamic greeting', () => assert.equal(composeReply('السلام عليكم').reply, 'وعليكم السلام ورحمة الله وبركاته'));
-test('casual greeting with spelling variation', () => assert.equal(composeReply('اهلاا').reply, 'أهلين'));
+test('greeting alone does not trigger an automatic reply', () => {
+  assert.equal(composeReply('السلام عليكم').reply, null);
+  assert.equal(composeReply('هاي').reply, null);
+});
+test('Islamic greeting is combined with a supported answer', () => {
+  const reply = composeReply('السلام عليكم وش نوع لحومكم؟').reply;
+  assert.match(reply, /^وعليكم السلام،/);
+  assert.match(reply, /ساديا.*أمريكانا/);
+});
+test('casual greeting and FAQ answer are combined', () => {
+  const reply = composeReply('هلا متى تفتحون؟').reply;
+  assert.match(reply, /^أهلين،/);
+  assert.match(reply, /12 ظهرًا إلى 3 صباحًا/);
+});
+test('greeting with an unsupported question does not trigger a reply', () => {
+  assert.equal(composeReply('هلا وش رأيك في الجو؟').reply, null);
+});
 test('supplier question in Saudi Arabic', () => assert.match(composeReply('من وين الدجاج والبيبروني؟').reply, /ساديا.*أمريكانا/));
 test('local chicken question gets the local supplier answer', () => {
   const result = composeReply('هل الدجاج محلي ولا مستورد؟');
