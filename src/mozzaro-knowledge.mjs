@@ -6,6 +6,7 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
   closesAtHour: 3,
   hoursText: 'ساعات العمل في موزارو من 12 ظهرًا إلى 3 صباحًا، جميع أيام الأسبوع.',
   suppliersText: 'الدجاج عندنا من ساديا، والبيبروني من أمريكانا.',
+  localChickenText: 'الدجاج عندنا محلي ومن ساديا، والبيبروني من أمريكانا.',
   cateringText: 'لتفاصيل الكيترنق، تفضلوا بالتواصل على الواتساب: 0545383080',
   ordersText: 'للطلبات، اتصلوا على الرقم التالي ويرد عليكم الكاشير: 0565017314',
   menuItems: [], // Add only after Mozzaro verifies each item and price.

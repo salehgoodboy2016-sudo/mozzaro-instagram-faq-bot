@@ -24,6 +24,9 @@ const env = {
   ...parseEnv(await readFile(new URL('../.env', import.meta.url), 'utf8').catch(() => '')),
   ...process.env,
 };
+const CLAUDE_KNOWLEDGE = Object.freeze(Object.fromEntries(
+  Object.entries(MOZZARO_KNOWLEDGE).filter(([key]) => key !== 'localChickenText'),
+));
 const config = {
   port: Number(env.PORT || 3000),
   verifyToken: env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || '',
@@ -376,7 +379,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const kapsoService = new WhatsAppService({ store: whatsappStore, client: kapsoClient,
     enabled: config.kapsoEnabled, coexistenceVerified: config.kapsoCoexistenceVerified,
     phoneNumberId: config.kapsoPhoneNumberId, allowlist: config.whatsappAutomationAllowlist,
-    aiClient: claudeClient, aiMonthlyLimitUsd: config.claudeMonthlyLimitUsd, knowledge: MOZZARO_KNOWLEDGE });
+    aiClient: claudeClient, aiMonthlyLimitUsd: config.claudeMonthlyLimitUsd, knowledge: CLAUDE_KNOWLEDGE });
   if (whatsappStore && config.whatsappResumeSender) {
     const resumePhoneId = config.kapsoPhoneNumberId || config.whatsappPhoneNumberId;
     const resumeConversationId = whatsappStore.conversationId(resumePhoneId, config.whatsappResumeSender);
