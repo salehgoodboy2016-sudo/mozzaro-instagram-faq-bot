@@ -255,7 +255,8 @@ export function isOpenInRiyadh(now = new Date()) {
 
 export function planWhatsAppReply(rawText, now = new Date()) {
   const text = normalizeArabic(rawText);
-  if (!text) return { reply: null, topics: [], requiresHuman: true, reason: 'unsupported_content' };
+  if (!text) return { reply: 'عذرًا، ما قدرت أقرأ الرسالة. اكتب استفسارك نصًا وبساعدك.', topics: [],
+    requiresHuman: false, reason: 'unsupported_content' };
 
   const islamicGreeting = includes(text, ['السلام عليكم', 'سلام عليكم']);
   const casualGreeting = !islamicGreeting && includes(text, ['هلا', 'اهلا', 'أهلا', 'مرحبا', 'يا هلا']);

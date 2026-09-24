@@ -127,7 +127,7 @@ export class WhatsAppService {
     }
     let plan = planWhatsAppReply(event.text, this.now());
     let aiContext = [];
-    if (this.enabled && this.aiClient?.enabled && !['document', 'catering_document'].includes(plan.type) && !plan.ambiguity
+    if (this.enabled && this.aiClient?.enabled && event.text.trim() && !['document', 'catering_document'].includes(plan.type) && !plan.ambiguity
       && (!plan.requiresHuman || plan.reason === 'unknown_question') && this.knowledge) {
       aiContext = await this.store.getAiContext?.(conversationId) || [];
       if (event.text.length > 2500) {
@@ -248,9 +248,10 @@ export class WhatsAppService {
       } else {
         await this.client.sendText({ to: event.sender, text: plan.reply, customerMessageAt: event.at, now: this.now() });
       }
-      if (this.aiClient?.enabled) await this.store.appendAiContext?.(conversationId, event.text, plan.reply);
-      await this.store.setOutcome(event.id, 'sent');
-      return 'sent';
+      if (this.aiClient?.enabled && event.text.trim()) await this.store.appendAiContext?.(conversationId, event.text, plan.reply);
+      const outcome = plan.reason === 'unsupported_content' ? 'unsupported_content_replied' : 'sent';
+      await this.store.setOutcome(event.id, outcome);
+      return outcome;
     } catch (error) {
       await this.store.setOutcome(event.id, 'send_uncertain');
       console.error(JSON.stringify({ service: 'whatsapp-automation', outcome: 'send_uncertain', status: error.status ?? null, code: error.code ?? null }));

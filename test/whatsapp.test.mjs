@@ -109,6 +109,23 @@ test('complaints and unknown questions require human attention and safe fallback
   assert.match(unknown.reply, /بنحوّل استفسارك للفريق/);
 });
 
+test('unsupported media gets a safe Arabic prompt, is audited, and does not trigger Claude or human handoff', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  let aiCalls = 0;
+  const aiClient = { enabled: true, estimateUsd: () => 1, answer: async () => { aiCalls++; throw new Error('should not run'); } };
+  const service = new WhatsAppService({ store, client, aiClient, knowledge: {}, phoneNumberId: phoneId,
+    enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+  const sticker = { entry: [{ changes: [{ field: 'messages', value: { metadata: { phone_number_id: phoneId },
+    messages: [{ id: 'wamid.sticker', from: '966500000001', timestamp: '1790190000', type: 'sticker', sticker: { id: 'media-id' } }] } }] }] };
+  assert.deepEqual((await service.process(sticker)).outcomes, { unsupported_content_replied: 1 });
+  assert.equal(client.sent.length, 1);
+  assert.equal(client.sent[0].text, 'عذرًا، ما قدرت أقرأ الرسالة. اكتب استفسارك نصًا وبساعدك.');
+  assert.equal(aiCalls, 0);
+  const conversationId = store.conversationId(phoneId, '966500000001');
+  assert.notEqual((await store.getConversation(conversationId))?.human_active, true);
+  assert.equal((await store.recent())[0].outcome, 'unsupported_content_replied');
+});
+
 test('menu names and SAR prices exactly match the supplied official PDF', () => {
   const expected = [
     ['pizza_margherita', 'pizza', 'مارجريتا', 'Margherita', 29],
