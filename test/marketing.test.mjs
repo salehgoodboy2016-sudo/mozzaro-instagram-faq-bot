@@ -43,7 +43,7 @@ test('Kapso template sync is read-only and keeps approved marketing templates on
   assert.equal(request.options.body, undefined);
 });
 
-test('imports require documented consent, deduplicate, and preserve permanent suppression', async () => {
+test('imports preserve pending contacts, require evidence for eligibility, deduplicate, and preserve suppression', async () => {
   const { pool, store } = await setup();
   const rows = [
     { phone: '0506252549', displayName: 'عميل', consentStatus: 'نعم', consentSource: 'نموذج المتجر',
@@ -54,12 +54,29 @@ test('imports require documented consent, deduplicate, and preserve permanent su
       consentAt: '2026-09-20T10:00:00Z', consentEvidence: 'record-3' },
   ];
   const first = await store.importRows({ rows, filename: 'customers.csv', fileSha256: 'a'.repeat(64) });
-  assert.deepEqual({ accepted: first.acceptedRows, rejected: first.rejectedRows, duplicates: first.duplicateRows },
-    { accepted: 1, rejected: 2, duplicates: 1 });
+  assert.deepEqual({ eligible: first.eligibleRows, pending: first.pendingRows, optedOut: first.optedOutRows,
+    rejected: first.rejectedRows, duplicates: first.duplicateRows },
+  { eligible: 1, pending: 0, optedOut: 1, rejected: 1, duplicates: 1 });
   await store.suppress({ phone: '0506252549', reason: 'طلب إيقاف الرسائل', source: 'whatsapp' });
   const second = await store.importRows({ rows: [rows[0]], filename: 'retry.csv', fileSha256: 'b'.repeat(64) });
-  assert.equal(second.acceptedRows, 0); assert.equal(second.suppressedRows, 1);
+  assert.equal(second.eligibleRows, 0); assert.equal(second.suppressedRows, 1);
   assert.equal((await store.dashboard()).eligibleContacts, 0);
+  await pool.end();
+});
+
+test('Bonat customer headers import profiles as pending without inventing marketing consent', async () => {
+  const csv = 'Name,Phone Number,Registered Since,Visits,Points Balance,Segment\nعميل,0500000001,2026-01-02T10:00:00Z,7,12.5,عميل وفي\n';
+  const parsed = await parseCustomerImport({ filename: 'bonat.csv', base64: Buffer.from(csv).toString('base64') });
+  const { pool, store } = await setup();
+  const preview = store.prepareRows(parsed.rows);
+  assert.equal(preview.accepted.length, 0); assert.equal(preview.pending.length, 1);
+  const result = await store.importRows({ ...parsed });
+  assert.deepEqual({ imported: result.importedRows, pending: result.pendingRows, eligible: result.eligibleRows },
+    { imported: 1, pending: 1, eligible: 0 });
+  const profile = (await pool.query(`SELECT p.visits,p.loyalty_points,c.consent_status
+    FROM marketing_contact_profiles p JOIN marketing_contacts c USING (contact_id)`)).rows[0];
+  assert.equal(profile.visits, 7); assert.equal(Number(profile.loyalty_points), 12.5);
+  assert.equal(profile.consent_status, 'unknown');
   await pool.end();
 });
 

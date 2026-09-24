@@ -26,6 +26,55 @@ export function validateConsentRow(row) {
     consentSource: source, consentEvidence: evidence, consentAt };
 }
 
+function nullableDate(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function nullableNumber(value, { integer = false } = {}) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const parsed = Number(String(value).replace(/,/g, '').trim());
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return integer ? Math.trunc(parsed) : parsed;
+}
+
+function baseContact(row, phone) {
+  return { phone, displayName: String(row.displayName ?? '').trim() || null,
+    profile: { source: 'bonat_report', registeredAt: nullableDate(row.registeredAt),
+      visits: nullableNumber(row.visits, { integer: true }), loyaltyPoints: nullableNumber(row.loyaltyPoints),
+      segment: String(row.segment ?? '').trim() || null } };
+}
+
+function batches(rows, size = 250) {
+  const result = [];
+  for (let index = 0; index < rows.length; index += size) result.push(rows.slice(index, index + size));
+  return result;
+}
+
+async function insertBatch(client, prefix, rows, suffix = '') {
+  for (const batch of batches(rows)) {
+    const values = []; const parameters = [];
+    for (const row of batch) {
+      values.push(`(${row.map((value) => { parameters.push(value); return `$${parameters.length}`; }).join(',')})`);
+    }
+    await client.query(`${prefix} VALUES ${values.join(',')} ${suffix}`, parameters);
+  }
+}
+
+export function classifyImportRow(row) {
+  const phone = normalizeSaudiPhone(row.phone);
+  if (!phone) return { kind: 'rejected', reason: 'invalid_phone' };
+  const common = baseContact(row, phone);
+  const status = String(row.consentStatus ?? '').trim().toLowerCase();
+  const negative = new Set(['no', 'false', 'opted_out', 'لا', 'غير موافق', 'مرفوض']);
+  if (negative.has(status)) return { kind: 'opted_out', ...common };
+  const consent = validateConsentRow(row);
+  if (consent.accepted) return { kind: 'accepted', ...common, consentSource: consent.consentSource,
+    consentEvidence: consent.consentEvidence, consentAt: consent.consentAt };
+  return { kind: 'pending', ...common, reason: consent.reason };
+}
+
 export class MarketingStore {
   constructor({ pool, rateUsd = DEFAULT_SAUDI_MARKETING_RATE_USD }) {
     if (!pool) throw new Error('PostgreSQL pool is required');
@@ -35,48 +84,83 @@ export class MarketingStore {
   }
 
   prepareRows(rows) {
-    const seen = new Set(); const accepted = []; const rejected = [];
+    const seen = new Set(); const accepted = []; const pending = []; const optedOut = []; const rejected = [];
     for (const [index, row] of rows.entries()) {
-      const result = validateConsentRow(row);
-      if (!result.accepted) { rejected.push({ row: index + 2, reason: result.reason }); continue; }
+      const result = classifyImportRow(row);
+      if (result.kind === 'rejected') { rejected.push({ row: index + 2, reason: result.reason }); continue; }
       if (seen.has(result.phone)) { rejected.push({ row: index + 2, reason: 'duplicate_phone' }); continue; }
-      seen.add(result.phone); accepted.push(result);
+      seen.add(result.phone);
+      if (result.kind === 'accepted') accepted.push(result);
+      else if (result.kind === 'opted_out') optedOut.push(result);
+      else pending.push(result);
     }
-    return { accepted, rejected, totalRows: rows.length,
+    return { accepted, pending, optedOut, rejected, totalRows: rows.length,
       duplicateRows: rejected.filter((row) => row.reason === 'duplicate_phone').length };
   }
 
   async importRows({ rows, filename, fileSha256 }) {
     const prepared = this.prepareRows(rows);
     const client = await this.pool.connect();
-    let suppressed = 0;
     try {
       await client.query('BEGIN');
-      for (const row of prepared.accepted) {
-        const blocked = await client.query('SELECT 1 FROM marketing_suppressions WHERE phone_e164=$1', [row.phone]);
-        if (blocked.rowCount) { suppressed += 1; continue; }
-        const contactId = createHash('sha256').update(`marketing:${row.phone}`).digest('hex');
-        await client.query(`INSERT INTO marketing_contacts
-          (contact_id,phone_e164,display_name,consent_status,consent_source,consent_at,consent_evidence)
-          VALUES ($1,$2,$3,'opted_in',$4,$5,$6) ON CONFLICT (phone_e164) DO UPDATE SET
-          display_name=COALESCE(EXCLUDED.display_name,marketing_contacts.display_name),consent_status='opted_in',
-          consent_source=EXCLUDED.consent_source,consent_at=EXCLUDED.consent_at,
-          consent_evidence=EXCLUDED.consent_evidence,updated_at=now()`,
-        [contactId, row.phone, row.displayName, row.consentSource, row.consentAt, row.consentEvidence]);
-        const actual = await client.query('SELECT contact_id FROM marketing_contacts WHERE phone_e164=$1', [row.phone]);
-        await client.query(`INSERT INTO marketing_consent_events
-          (consent_event_id,contact_id,consent_status,source,evidence,occurred_at)
-          VALUES ($1,$2,'opted_in',$3,$4,$5)`,
-        [randomUUID(), actual.rows[0].contact_id, row.consentSource, row.consentEvidence, row.consentAt]);
-      }
+      const existingSuppressions = new Set((await client.query('SELECT phone_e164 FROM marketing_suppressions'))
+        .rows.map((row) => row.phone_e164));
+      await insertBatch(client, `INSERT INTO marketing_suppressions
+        (phone_e164,reason,source,occurred_at)`, prepared.optedOut.map((row) =>
+        [row.phone, 'source_marked_opt_out', `import:${filename}`, new Date()]),
+      'ON CONFLICT (phone_e164) DO NOTHING');
+      for (const row of prepared.optedOut) existingSuppressions.add(row.phone);
+
+      const eligibleRows = prepared.accepted.filter((row) => !existingSuppressions.has(row.phone));
+      const pendingRows = prepared.pending.filter((row) => !existingSuppressions.has(row.phone));
+      const suppressedRows = [...prepared.accepted, ...prepared.pending, ...prepared.optedOut]
+        .filter((row) => existingSuppressions.has(row.phone));
+      const idFor = (phone) => createHash('sha256').update(`marketing:${phone}`).digest('hex');
+
+      await insertBatch(client, `INSERT INTO marketing_contacts
+        (contact_id,phone_e164,display_name,consent_status,consent_source,consent_at,consent_evidence)`,
+      eligibleRows.map((row) => [idFor(row.phone), row.phone, row.displayName, 'opted_in', row.consentSource,
+        row.consentAt, row.consentEvidence]), `ON CONFLICT (phone_e164) DO UPDATE SET
+        display_name=COALESCE(EXCLUDED.display_name,marketing_contacts.display_name),consent_status='opted_in',
+        consent_source=EXCLUDED.consent_source,consent_at=EXCLUDED.consent_at,
+        consent_evidence=EXCLUDED.consent_evidence,updated_at=now()`);
+      await insertBatch(client, `INSERT INTO marketing_contacts
+        (contact_id,phone_e164,display_name,consent_status)`, pendingRows.map((row) =>
+        [idFor(row.phone), row.phone, row.displayName, 'unknown']), `ON CONFLICT (phone_e164) DO UPDATE SET
+        display_name=COALESCE(EXCLUDED.display_name,marketing_contacts.display_name),updated_at=now()`);
+      await insertBatch(client, `INSERT INTO marketing_contacts
+        (contact_id,phone_e164,display_name,consent_status)`, suppressedRows.map((row) =>
+        [idFor(row.phone), row.phone, row.displayName, 'opted_out']), `ON CONFLICT (phone_e164) DO UPDATE SET
+        display_name=COALESCE(EXCLUDED.display_name,marketing_contacts.display_name),consent_status='opted_out',
+        consent_source=NULL,consent_at=NULL,consent_evidence=NULL,updated_at=now()`);
+
+      const contactByPhone = new Map((await client.query('SELECT contact_id,phone_e164 FROM marketing_contacts'))
+        .rows.map((row) => [row.phone_e164, row.contact_id]));
+      const importedRows = [...eligibleRows, ...pendingRows, ...suppressedRows];
+      await insertBatch(client, `INSERT INTO marketing_contact_profiles
+        (contact_id,source,registered_at,visits,loyalty_points,segment)`, importedRows.map((row) =>
+        [contactByPhone.get(row.phone), row.profile.source, row.profile.registeredAt, row.profile.visits,
+          row.profile.loyaltyPoints, row.profile.segment]), `ON CONFLICT (contact_id) DO UPDATE SET
+        source=EXCLUDED.source,registered_at=COALESCE(EXCLUDED.registered_at,marketing_contact_profiles.registered_at),
+        visits=COALESCE(EXCLUDED.visits,marketing_contact_profiles.visits),
+        loyalty_points=COALESCE(EXCLUDED.loyalty_points,marketing_contact_profiles.loyalty_points),
+        segment=COALESCE(EXCLUDED.segment,marketing_contact_profiles.segment),updated_at=now()`);
+      await insertBatch(client, `INSERT INTO marketing_consent_events
+        (consent_event_id,contact_id,consent_status,source,evidence,occurred_at)`, eligibleRows.map((row) =>
+        [randomUUID(), contactByPhone.get(row.phone), 'opted_in', row.consentSource, row.consentEvidence, row.consentAt]));
+
+      const imported = importedRows.length; const eligible = eligibleRows.length; const pending = pendingRows.length;
+      const optedOut = prepared.optedOut.length; const suppressed = suppressedRows.length;
       const importId = randomUUID();
       await client.query(`INSERT INTO marketing_imports
-        (import_id,filename,file_sha256,total_rows,accepted_rows,rejected_rows,duplicate_rows)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)`, [importId, filename, fileSha256, prepared.totalRows,
-        prepared.accepted.length - suppressed, prepared.rejected.length + suppressed, prepared.duplicateRows]);
+        (import_id,filename,file_sha256,total_rows,accepted_rows,rejected_rows,duplicate_rows,
+          pending_rows,imported_rows,opted_out_rows)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [importId, filename, fileSha256, prepared.totalRows,
+        eligible, prepared.rejected.length, prepared.duplicateRows, pending, imported, optedOut]);
       await client.query('COMMIT');
-      return { importId, totalRows: prepared.totalRows, acceptedRows: prepared.accepted.length - suppressed,
-        rejectedRows: prepared.rejected.length + suppressed, duplicateRows: prepared.duplicateRows, suppressedRows: suppressed };
+      return { importId, totalRows: prepared.totalRows, importedRows: imported, eligibleRows: eligible,
+        pendingRows: pending, optedOutRows: optedOut, rejectedRows: prepared.rejected.length,
+        duplicateRows: prepared.duplicateRows, suppressedRows: suppressed };
     } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
     finally { client.release(); }
   }
@@ -209,14 +293,16 @@ export class MarketingStore {
   }
 
   async dashboard() {
-    const [contacts, suppressed, campaigns, templates, imports] = await Promise.all([
+    const [contacts, pending, suppressed, campaigns, templates, imports] = await Promise.all([
       this.pool.query("SELECT count(*)::int AS count FROM marketing_contacts WHERE consent_status='opted_in'"),
+      this.pool.query("SELECT count(*)::int AS count FROM marketing_contacts WHERE consent_status='unknown'"),
       this.pool.query('SELECT count(*)::int AS count FROM marketing_suppressions'),
       this.pool.query(`SELECT campaign_id,name,status,eligible_recipient_count,estimated_cost_usd,
         scheduled_at,owner_approved_at,created_at FROM marketing_campaigns ORDER BY created_at DESC LIMIT 50`),
       this.listTemplates(), this.pool.query('SELECT * FROM marketing_imports ORDER BY imported_at DESC LIMIT 20'),
     ]);
-    return { eligibleContacts: contacts.rows[0].count, suppressedContacts: suppressed.rows[0].count,
+    return { eligibleContacts: contacts.rows[0].count, pendingContacts: pending.rows[0].count,
+      suppressedContacts: suppressed.rows[0].count,
       campaigns: campaigns.rows, templates, imports: imports.rows, sendingEnabled: false, rateUsd: this.rateUsd };
   }
 }
