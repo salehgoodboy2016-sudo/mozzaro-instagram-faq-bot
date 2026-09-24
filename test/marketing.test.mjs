@@ -5,6 +5,7 @@ import { runMigrations } from '../src/db-migrations.mjs';
 import { MarketingStore, normalizeSaudiPhone } from '../src/marketing-store.mjs';
 import { createWebhookServer } from '../src/webhook-server.mjs';
 import { parseCustomerImport } from '../src/campaign-dashboard.mjs';
+import { KapsoClient } from '../src/kapso-client.mjs';
 
 async function setup() {
   const database = newDb({ noAstCoverageCheck: true });
@@ -26,6 +27,20 @@ test('CSV imports preserve consent evidence without exposing it in preview', asy
   assert.equal(parsed.rows[0].displayName, 'عميل، موزارو');
   assert.equal(parsed.rows[0].consentEvidence, 'receipt-9');
   assert.match(parsed.fileSha256, /^[a-f0-9]{64}$/);
+});
+
+test('Kapso template sync is read-only and keeps approved marketing templates only', async () => {
+  let request;
+  const client = new KapsoClient({ apiKey: 'secret-test-key', phoneNumberId: '816217614914860',
+    fetchImpl: async (url, options) => { request = { url: String(url), options }; return new Response(JSON.stringify({ data: [
+      { id: '1', name: 'approved', status: 'APPROVED', category: 'MARKETING' },
+      { id: '2', name: 'pending', status: 'PENDING', category: 'MARKETING' },
+    ] }), { status: 200, headers: { 'Content-Type': 'application/json' } }); } });
+  const templates = await client.listApprovedMarketingTemplates({ businessAccountId: '4133548783569339' });
+  assert.equal(templates.length, 1); assert.equal(request.options.method, undefined);
+  assert.match(request.url, /4133548783569339\/message_templates/);
+  assert.match(request.url, /status=APPROVED/); assert.match(request.url, /category=MARKETING/);
+  assert.equal(request.options.body, undefined);
 });
 
 test('imports require documented consent, deduplicate, and preserve permanent suppression', async () => {
