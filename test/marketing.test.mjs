@@ -4,7 +4,7 @@ import { newDb } from 'pg-mem';
 import { runMigrations } from '../src/db-migrations.mjs';
 import { MarketingStore, normalizeSaudiPhone } from '../src/marketing-store.mjs';
 import { createWebhookServer } from '../src/webhook-server.mjs';
-import { parseCustomerImport } from '../src/campaign-dashboard.mjs';
+import { campaignDashboardHtml, parseCustomerImport } from '../src/campaign-dashboard.mjs';
 import { KapsoClient } from '../src/kapso-client.mjs';
 
 async function setup() {
@@ -115,4 +115,9 @@ test('campaign dashboard APIs require authentication and expose no send route', 
     { method: 'POST', headers: { Authorization: 'Bearer owner-token' } });
   assert.equal(send.status, 404);
   await new Promise((resolve) => server.close(resolve)); await pool.end();
+});
+
+test('campaign dashboard inline script is syntactically valid', () => {
+  const script = campaignDashboardHtml().match(/<script>([\s\S]*)<\/script>/)?.[1] ?? '';
+  assert.doesNotThrow(() => new Function(script));
 });
