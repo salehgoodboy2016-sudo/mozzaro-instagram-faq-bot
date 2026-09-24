@@ -42,7 +42,7 @@ function normalizeIdentity(value) {
 
 export class WhatsAppService {
   constructor({ store = null, client = null, aiClient = null, aiMonthlyLimitUsd = 0,
-    knowledge = null, enabled = false, phoneNumberId, coexistenceVerified = false, allowlist = [],
+    knowledge = null, enabled = false, phoneNumberId, coexistenceVerified = false, allowlist = [], allowAll = false,
     menuDocumentEnabled = false, menuDocumentUrl = '', cateringDocumentEnabled = false, cateringDocumentUrl = '',
     now = () => new Date() }) {
     this.store = store;
@@ -54,13 +54,14 @@ export class WhatsAppService {
     this.phoneNumberId = phoneNumberId;
     this.coexistenceVerified = coexistenceVerified;
     this.allowlist = new Set(allowlist.map(normalizeIdentity).filter(Boolean));
+    this.allowAll = allowAll === true;
     this.menuDocumentEnabled = menuDocumentEnabled;
     this.menuDocumentUrl = menuDocumentUrl;
     this.cateringDocumentEnabled = cateringDocumentEnabled;
     this.cateringDocumentUrl = cateringDocumentUrl;
     this.now = now;
-    if (enabled && (!store || !client || !coexistenceVerified || !phoneNumberId || !this.allowlist.size)) {
-      throw new Error('WhatsApp automation requires a persistent store, outbound transport, verified Coexistence, phone ID, and a non-empty test allowlist');
+    if (enabled && (!store || !client || !coexistenceVerified || !phoneNumberId || (!this.allowlist.size && !this.allowAll))) {
+      throw new Error('WhatsApp automation requires a persistent store, outbound transport, verified Coexistence, phone ID, and either an allowlist or explicit all-customer approval');
     }
   }
 
@@ -99,7 +100,7 @@ export class WhatsAppService {
     const conversationId = this.store.conversationId(event.phoneId, event.sender);
     const inserted = await this.store.recordEvent({ id: event.id, conversationId, type: 'incoming', at: event.at });
     if (!inserted) return 'duplicate';
-    if (this.enabled && !this.allowlist.has(normalizeIdentity(event.sender))) {
+    if (this.enabled && !this.allowAll && !this.allowlist.has(normalizeIdentity(event.sender))) {
       await this.store.setOutcome(event.id, 'allowlist_blocked');
       return 'allowlist_blocked';
     }

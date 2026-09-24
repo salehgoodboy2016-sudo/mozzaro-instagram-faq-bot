@@ -72,6 +72,7 @@ const config = {
   kapsoCoexistenceVerified: env.KAPSO_COEXISTENCE_VERIFIED === 'true',
   kapsoEmployeeEchoVerified: env.KAPSO_EMPLOYEE_ECHO_VERIFIED === 'true',
   whatsappAutomationAllowlist: String(env.WHATSAPP_AUTOMATION_ALLOWLIST || '').split(',').map((value) => value.trim()).filter(Boolean),
+  whatsappAutomationAllowAll: env.WHATSAPP_AUTOMATION_ALLOW_ALL === 'true',
   whatsappResumeSender: env.WHATSAPP_RESUME_SENDER || '',
   kapsoEnabled: env.WHATSAPP_AUTOMATION_ENABLED === 'true'
     && env.KAPSO_AUTO_REPLY_ENABLED === 'true'
@@ -212,6 +213,7 @@ export function createWebhookServer(overrides = {}) {
         mentionRepostEnabled: handlerConfig.mentionRepostEnabled,
         whatsappWebhookConfigured: Boolean(handlerConfig.whatsappVerifyToken && handlerConfig.whatsappAppSecret),
         whatsappAutomationEnabled: handlerConfig.whatsappGlobalEnabled,
+        whatsappAutomationAllowAll: handlerConfig.whatsappAutomationAllowAll === true,
         whatsappAutoReplyEnabled: handlerConfig.whatsappEnabled,
         kapsoWebhookConfigured: Boolean(handlerConfig.kapsoWebhookSecret),
         kapsoAutoReplyEnabled: handlerConfig.kapsoEnabled,
@@ -406,6 +408,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const kapsoService = new WhatsAppService({ store: whatsappStore, client: kapsoClient,
     enabled: config.kapsoEnabled, coexistenceVerified: config.kapsoCoexistenceVerified,
     phoneNumberId: config.kapsoPhoneNumberId, allowlist: config.whatsappAutomationAllowlist,
+    allowAll: config.whatsappAutomationAllowAll,
     menuDocumentEnabled: config.kapsoMenuDocumentEnabled, menuDocumentUrl: config.kapsoMenuDocumentUrl,
     cateringDocumentEnabled: config.kapsoCateringDocumentEnabled, cateringDocumentUrl: config.kapsoCateringDocumentUrl,
     aiClient: claudeClient, aiMonthlyLimitUsd: config.claudeMonthlyLimitUsd, knowledge: CLAUDE_KNOWLEDGE });
@@ -416,7 +419,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const resumeSender = config.whatsappResumeSender.replace(/[()\s-]/g, '').replace(/^\+/, '');
   const allowlist = config.whatsappAutomationAllowlist
     .map((value) => value.replace(/[()\s-]/g, '').replace(/^\+/, ''));
-  if (resumeSender && whatsappStore) {
+  if (resumeSender && !config.whatsappAutomationAllowAll && whatsappStore) {
     const outcome = allowlist.length === 1 && allowlist[0] === resumeSender && resumeSender === '966545383080'
       ? (await whatsappStore.resumeConversationOnce(config.kapsoPhoneNumberId, resumeSender)).outcome
       : 'allowlist_mismatch';

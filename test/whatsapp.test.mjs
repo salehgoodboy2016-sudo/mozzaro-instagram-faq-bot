@@ -11,9 +11,9 @@ import { MOZZARO_KNOWLEDGE, MOZZARO_AI_TOPICS } from '../src/mozzaro-knowledge.m
 
 const now = new Date('2026-09-23T19:00:00Z');
 const phoneId = '816217614914860';
-const sample = (text, id = 'wamid.test', at = '1790190000') => ({ object: 'whatsapp_business_account', entry: [{ changes: [
+const sample = (text, id = 'wamid.test', at = '1790190000', sender = '966500000001') => ({ object: 'whatsapp_business_account', entry: [{ changes: [
   { field: 'messages', value: { metadata: { phone_number_id: phoneId }, messages: [
-    { id, from: '966500000001', timestamp: at, type: 'text', text: { body: text } },
+    { id, from: sender, timestamp: at, type: 'text', text: { body: text } },
   ] } },
 ] }] });
 
@@ -460,7 +460,7 @@ test('persistent event IDs suppress retries and automation defaults off', async 
 test('enabled automation requires and enforces a strict test allowlist', async () => {
   const store = new MemoryStore(), client = new MockWhatsAppClient();
   assert.throws(() => new WhatsAppService({ store, client, phoneNumberId: phoneId,
-    enabled: true, coexistenceVerified: true }), /non-empty test allowlist/);
+    enabled: true, coexistenceVerified: true }), /allowlist or explicit all-customer approval/);
   const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
     coexistenceVerified: true, allowlist: ['+966500000001'], now: () => now });
   assert.deepEqual((await service.process(sample('متى تفتحون؟', 'blocked', '1790190000'))).outcomes, { sent: 1 });
@@ -468,6 +468,18 @@ test('enabled automation requires and enforces a strict test allowlist', async (
   blocked.entry[0].changes[0].value.messages[0].from = '966500000002';
   assert.deepEqual((await service.process(blocked)).outcomes, { allowlist_blocked: 1 });
   assert.equal(client.sent.length, 1);
+});
+
+test('explicit general launch allows every inbound sender but preserves existing human handoff', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowAll: true, now: () => now });
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'general-launch', '1790190000', '966599999999'))).outcomes, { sent: 1 });
+  const employeeManagedId = store.conversationId(phoneId, '966588888888');
+  await store.setHuman(employeeManagedId, true, 'employee_takeover');
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'existing-handoff', '1790190000', '966588888888'))).outcomes, { human_active: 1 });
+  assert.equal(client.sent.length, 1);
+  assert.equal((await store.getConversation(employeeManagedId)).human_active, true);
 });
 
 test('human takeover suppresses replies and can be resumed', async () => {
