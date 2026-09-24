@@ -6,6 +6,8 @@ const ANSWERS = Object.freeze({
   hours: MOZZARO_KNOWLEDGE.hoursText,
   catering: MOZZARO_KNOWLEDGE.cateringText,
   orders: MOZZARO_KNOWLEDGE.ordersText,
+  delivery: MOZZARO_KNOWLEDGE.deliveryText,
+  orders_contact: MOZZARO_KNOWLEDGE.ordersContactText,
 });
 
 const CATERING_INCLUSION_TEXT = Object.freeze({
@@ -267,6 +269,9 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     return { reply: null, topics: [], requiresHuman: true, reason: 'human_request' };
   }
 
+  const asksHours = includes(text, ['ساعات', 'اوقات', 'دوام', 'تفتح', 'يفتح', 'فاتحين', 'مفتوح', 'تقفل', 'تسكر',
+    'متى تفتح', 'متى تقفل', 'hours', 'open', 'closing']);
+
   const cateringContext = isCateringQuestion(text);
   if (cateringContext && isCustomCateringRequest(text)) {
     return { reply: null, topics: [], requiresHuman: true, reason: 'human_request' };
@@ -276,11 +281,18 @@ export function planWhatsAppReply(rawText, now = new Date()) {
       type: 'catering_document', documentKind: 'catering', topics: ['catering_document_request'], requiresHuman: false };
   }
 
+  const greeting = islamicGreeting ? 'وعليكم السلام ورحمة الله وبركاته' : casualGreeting ? 'أهلين' : null;
+  const asksOrderPhone = includes(text, ['رقم الطلب', 'رقم التواصل', 'رقمكم', 'رقم الهاتف', 'وش رقم', 'رقم جوال', 'phone number', 'contact number']);
+  if (asksOrderPhone) return { reply: ANSWERS.orders_contact, topics: ['orders_contact'], requiresHuman: false };
+  if (includes(text, ['توصيل', 'يوصل', 'توصلون', 'توصيل الطلب', 'delivery', 'deliver'])) {
+    return { reply: `${greeting ? `${greeting}، ` : ''}${ANSWERS.delivery}`, topics: ['delivery'], requiresHuman: false };
+  }
+
   const topics = [];
   const cateringTopics = cateringTopicsFor(text);
   if (cateringTopics.length) topics.push(...cateringTopics);
   else if (cateringContext) return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
-  const menuTopics = cateringContext ? [] : menuTopicsFor(text);
+  const menuTopics = cateringContext || asksHours ? [] : menuTopicsFor(text);
   if (menuTopics.includes('menu_pizza_burrata') && !includes(text,
     ['بيتزا', 'فوكاتشا', 'ساندويتش', 'ساندوتش', 'pizza', 'focaccia', 'sandwich'])) {
     return { reply: 'تقصد بيتزا البوراتا أو ساندويتش الفوكاتشا بالبوراتا؟ بنحوّل استفسارك للفريق يساعدك.',
@@ -306,7 +318,6 @@ export function planWhatsAppReply(rawText, now = new Date()) {
   if (includes(text, ['كيترنق', 'كيترينج', 'كترنق', 'كاترينج', 'بوفيه', 'ضيافه', 'catering'])) topics.push('catering');
   if (includes(text, ['اطلب', 'طلب', 'اوردر', 'توصيل', 'order', 'الكاشير'])) topics.push('orders');
 
-  const greeting = islamicGreeting ? 'وعليكم السلام ورحمة الله وبركاته' : casualGreeting ? 'أهلين' : null;
   if (!topics.length) {
     if (greeting && includes(text, ['السلام عليكم', 'سلام عليكم', 'هلا', 'اهلا', 'مرحبا', 'يا هلا']) && text.split(' ').length <= 3) {
       return { reply: greeting, topics: ['greeting'], requiresHuman: false };
@@ -332,12 +343,11 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     }
     parts.push(ANSWERS[topic]);
   }
-  if (topics.some((topic) => topic === 'suppliers' || topic === 'hours')) parts.push('أي خدمة ثانية؟');
   return { reply: parts.join(' '), topics, requiresHuman: false };
 }
 
 export function renderApprovedTopics(topics, now = new Date()) {
-  const allowed = new Set(['suppliers', 'hours', 'catering', 'orders', 'menu_pizza', 'menu_pasta',
+  const allowed = new Set(['suppliers', 'hours', 'catering', 'orders', 'delivery', 'orders_contact', 'menu_pizza', 'menu_pasta',
     'menu_appetizers', 'menu_sauces', 'menu_drinks', 'menu_focaccia_sandwiches', 'menu_focaccia_bread', 'menu_all',
     'catering_packages', 'catering_types', 'catering_burrata', 'catering_staff', 'catering_addons',
     'catering_hours', 'catering_inclusions', 'catering_contact', 'catering_document_request',
@@ -353,6 +363,8 @@ export function renderApprovedTopics(topics, now = new Date()) {
     return { reply: 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.',
       type: 'document', topics: ['menu_all'], requiresHuman: false };
   }
+  if (topics.includes('delivery')) return { reply: ANSWERS.delivery, topics: ['delivery'], requiresHuman: false };
+  if (topics.includes('orders_contact')) return { reply: ANSWERS.orders_contact, topics: ['orders_contact'], requiresHuman: false };
   const parts = [];
   for (const topic of [...new Set(topics)]) {
     if (topic.startsWith('catering_')) {
@@ -368,7 +380,6 @@ export function renderApprovedTopics(topics, now = new Date()) {
     } else if (topic === 'hours') parts.push(ANSWERS.hours);
     else parts.push(ANSWERS[topic]);
   }
-  if (topics.some((topic) => topic === 'suppliers' || topic === 'hours')) parts.push('أي خدمة ثانية؟');
   return { reply: parts.join(' '), topics: [...new Set(topics)], requiresHuman: false };
 }
 

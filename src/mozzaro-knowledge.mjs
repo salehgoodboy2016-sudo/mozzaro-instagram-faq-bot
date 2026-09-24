@@ -4,11 +4,19 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
   timezone: 'Asia/Riyadh',
   opensAtHour: 12,
   closesAtHour: 3,
-  hoursText: 'ساعات العمل في موزارو من 12 ظهرًا إلى 3 صباحًا، جميع أيام الأسبوع.',
+  openingHours: Object.freeze({ daysPerWeek: 7, opensAt: '12:00', closesAt: '03:00', closesNextDay: true,
+    categories: Object.freeze(['pizza', 'pasta', 'focaccia', 'appetizers', 'drinks', 'sauces']),
+    morningShift: false, separateCategorySchedules: false }),
+  hoursText: 'حياك الله، نفتح يوميًا من الساعة 12 الظهر إلى 3 الفجر، وجميع أصنافنا متوفرة خلال ساعات العمل.',
   suppliersText: 'الدجاج عندنا من ساديا، والبيبروني من أمريكانا.',
   localChickenText: 'الدجاج عندنا محلي ومن ساديا، والبيبروني من أمريكانا.',
   cateringText: 'لتفاصيل وحجوزات الكيترنق تواصلوا على 0565017314 (+966565017314).',
-  ordersText: 'للطلبات، اتصلوا على الرقم التالي ويرد عليكم الكاشير: 0565017314',
+  ordersText: 'تقدر تطلب من الدرايف ثرو أو بالاتصال علينا، والتوصيل متوفر عن طريق كيتا وهنقرستيشن.',
+  ordersContactText: 'رقم الطلبات والكيترنق: 0565017314.',
+  orderChannels: Object.freeze(['drive_thru', 'phone', 'keeta', 'hungerstation']),
+  deliveryText: 'التوصيل متوفر داخل الأحساء عن طريق تطبيقَي كيتا وهنقرستيشن، حسب نطاق التغطية في التطبيق.',
+  deliveryRules: Object.freeze({ directRestaurantDelivery: false, coverageMustBeCheckedInApp: true,
+    neverPromiseFeesTimesMinimumsOrUnverifiedAreas: true }),
   // Transcribed from the official Mozzaro menu PDF supplied on 2026-09-24.
   // Null means the PDF lists no fixed price; never present it as free or guess.
   menuSource: 'البيتزا (10).pdf',
@@ -100,7 +108,7 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
 });
 
 export const MOZZARO_AI_TOPICS = Object.freeze([
-  'suppliers', 'hours', 'catering', 'orders',
+  'suppliers', 'hours', 'catering', 'orders', 'delivery', 'orders_contact',
   'catering_packages', 'catering_types', 'catering_burrata', 'catering_staff', 'catering_addons',
   'catering_hours', 'catering_inclusions', 'catering_contact',
   'menu_pizza', 'menu_pasta', 'menu_appetizers', 'menu_sauces', 'menu_drinks',

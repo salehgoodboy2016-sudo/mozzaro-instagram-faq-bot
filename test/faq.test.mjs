@@ -14,7 +14,7 @@ test('Islamic greeting is combined with a supported answer', () => {
 test('casual greeting and FAQ answer are combined', () => {
   const reply = composeReply('هلا متى تفتحون؟').reply;
   assert.match(reply, /^أهلين،/);
-  assert.match(reply, /12 ظهرًا إلى 3 صباحًا/);
+  assert.match(reply, /12 الظهر إلى 3 الفجر/);
 });
 test('greeting with an unsupported question does not trigger a reply', () => {
   assert.equal(composeReply('هلا وش رأيك في الجو؟').reply, null);
@@ -25,8 +25,11 @@ test('local chicken question gets the local supplier answer', () => {
   assert.match(result.reply, /الدجاج عندنا محلي ومن ساديا/);
   assert.deepEqual(result.topics, ['localChicken']);
 });
-test('hours question', () => assert.match(composeReply('متى تقفلون؟').reply, /12 ظهرًا إلى 3 صباحًا/));
-test('opening hours phrasing used by customer', () => assert.match(composeReply('متى أوقات الافتتاح؟').reply, /12 ظهرًا إلى 3 صباحًا/));
+test('hours question', () => assert.match(composeReply('متى تقفلون؟').reply, /12 الظهر إلى 3 الفجر/));
+test('opening hours phrasing uses the final owner-approved wording', () => {
+  assert.equal(composeReply('متى أوقات الافتتاح؟').reply,
+    'حياك الله، نفتح يوميًا من الساعة 12 الظهر إلى 3 الفجر، وجميع أصنافنا متوفرة خلال ساعات العمل. أي خدمة ثانية؟');
+});
 test('open now uses Riyadh time', () => {
   const open = composeReply('هل أنتم مفتوحين الآن؟', new Date('2026-09-22T22:00:00Z'));
   const closed = composeReply('هل أنتم مفتوحين الآن؟', new Date('2026-09-22T04:00:00Z'));

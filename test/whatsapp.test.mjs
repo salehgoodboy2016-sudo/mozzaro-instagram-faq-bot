@@ -51,8 +51,8 @@ test('approved Arabic greetings, suppliers, orders, catering, and combined quest
   const combined = planWhatsAppReply('هلا من وين اللحم والبيبروني ومتى تفتحون؟');
   assert.match(combined.reply, /^أهلين /);
   assert.match(combined.reply, /الدجاج عندنا من ساديا، والبيبروني من أمريكانا/);
-  assert.match(combined.reply, /12 ظهرًا إلى 3 صباحًا/);
-  assert.equal((combined.reply.match(/أي خدمة ثانية؟/g) || []).length, 1);
+  assert.match(combined.reply, /12 الظهر إلى 3 الفجر/);
+  assert.equal((combined.reply.match(/أي خدمة ثانية؟/g) || []).length, 0);
   assert.doesNotMatch(planWhatsAppReply('هل الدجاج محلي؟').reply, /محلي ومن ساديا/);
   const cateringContact = planWhatsAppReply('رقم الكيترنق؟');
   assert.equal(cateringContact.type, 'catering_document');
@@ -65,6 +65,39 @@ test('Riyadh opening hours continue after midnight and close at 03:00', () => {
   assert.equal(isOpenInRiyadh(new Date('2026-09-22T21:30:00Z')), true); // 00:30 local
   assert.equal(isOpenInRiyadh(new Date('2026-09-23T00:00:00Z')), false); // 03:00 local
   assert.equal(isOpenInRiyadh(new Date('2026-09-23T09:00:00Z')), true); // noon local
+  assert.equal(isOpenInRiyadh(new Date('2026-09-23T08:59:00Z')), false); // 11:59 local: no morning shift
+  assert.equal(isOpenInRiyadh(new Date('2026-09-22T23:59:00Z')), true); // 02:59 local: still open
+  assert.deepEqual(MOZZARO_KNOWLEDGE.openingHours, { daysPerWeek: 7, opensAt: '12:00', closesAt: '03:00', closesNextDay: true,
+    categories: ['pizza', 'pasta', 'focaccia', 'appetizers', 'drinks', 'sauces'], morningShift: false, separateCategorySchedules: false });
+});
+
+test('all menu categories use the exact shared opening-hours answer with no old schedule', () => {
+  const approved = 'حياك الله، نفتح يوميًا من الساعة 12 الظهر إلى 3 الفجر، وجميع أصنافنا متوفرة خلال ساعات العمل.';
+  for (const question of ['متى تفتحون البيتزا؟', 'متى دوام الباستا؟', 'متى تفتح الفوكاتشا؟',
+    'متى تفتحون المقبلات؟', 'متى تفتحون المشروبات؟', 'متى تفتحون الصوصات؟']) {
+    const reply = planWhatsAppReply(question).reply;
+    assert.equal(reply, approved, question);
+    assert.doesNotMatch(reply, /7 صباح|7:00|1 صباح|1:00|فوكاتشا.*دوام مختلف|[A-Za-z]/, question);
+  }
+  assert.equal(renderApprovedTopics(['hours']).reply, approved);
+});
+
+test('ordering and delivery use approved Arabic wording and do not claim direct delivery', () => {
+  const delivery = 'التوصيل متوفر داخل الأحساء عن طريق تطبيقَي كيتا وهنقرستيشن، حسب نطاق التغطية في التطبيق.';
+  const ordering = 'تقدر تطلب من الدرايف ثرو أو بالاتصال علينا، والتوصيل متوفر عن طريق كيتا وهنقرستيشن.';
+  assert.equal(planWhatsAppReply('هل توصلون داخل الأحساء؟').reply, delivery);
+  assert.equal(planWhatsAppReply('Do you deliver?').reply, delivery);
+  assert.equal(renderApprovedTopics(['delivery']).reply, delivery);
+  assert.equal(planWhatsAppReply('كيف أطلب؟').reply, ordering);
+  assert.equal(planWhatsAppReply('وش رقم الطلبات؟').reply, 'رقم الطلبات والكيترنق: 0565017314.');
+  for (const reply of [delivery, ordering, planWhatsAppReply('وش رقم الطلبات؟').reply]) {
+    assert.doesNotMatch(reply, /\b(?:Keeta|HungerStation|drive.thru)\b|direct delivery|رسوم|دقيقة|حد أدنى/i);
+    assert.doesNotMatch(reply, /[A-Za-z]/);
+  }
+  assert.equal(MOZZARO_KNOWLEDGE.deliveryRules.directRestaurantDelivery, false);
+  assert.equal(MOZZARO_KNOWLEDGE.deliveryRules.coverageMustBeCheckedInApp, true);
+  assert.equal(MOZZARO_KNOWLEDGE.orderContact, '0565017314');
+  assert.deepEqual(MOZZARO_KNOWLEDGE.orderChannels, ['drive_thru', 'phone', 'keeta', 'hungerstation']);
 });
 
 test('complaints and unknown questions require human attention and safe fallback', () => {
@@ -348,6 +381,12 @@ test('Claude adapter uses official Messages API shape and validates safe JSON ou
   assert.equal(request.url, 'https://api.anthropic.com/v1/messages');
   assert.equal(request.options.headers['anthropic-version'], '2023-06-01');
   assert.equal(JSON.parse(request.options.body).messages[0].content, 'هلا');
+  const system = JSON.parse(request.options.body).system;
+  assert.match(system, /من 12 الظهر إلى 3 الفجر/);
+  assert.match(system, /لا توجد فترة صباحية ولا ساعات مختلفة للفوكاتشا/);
+  assert.match(system, /حسب نطاق التغطية الظاهر في التطبيق فقط/);
+  assert.match(system, /لا تدّعِ وجود توصيل مباشر/);
+  assert.match(system, /لا تكرر رقم التواصل أثناء محادثة واتساب/);
   assert.deepEqual(result.topics, ['hours']);
   assert.equal(client.estimateUsd([{ role: 'user', content: 'هلا' }], 220, {}) > 0, true);
 });
@@ -376,7 +415,7 @@ test('Claude chooses a verified fact topic while Render supplies the approved Ar
   const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 2, knowledge: { hoursText: 'verified' },
     phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   assert.deepEqual((await service.process(sample('دوامكم كيف؟', 'ai-hours'))).outcomes, { sent: 1 });
-  assert.equal(client.sent[0].text, 'ساعات العمل في موزارو من 12 ظهرًا إلى 3 صباحًا، جميع أيام الأسبوع. أي خدمة ثانية؟');
+  assert.equal(client.sent[0].text, 'حياك الله، نفتح يوميًا من الساعة 12 الظهر إلى 3 الفجر، وجميع أصنافنا متوفرة خلال ساعات العمل.');
 });
 
 test('Claude is never called for a non-allowlisted customer or complaint', async () => {
@@ -512,7 +551,7 @@ test('admin preview requires its token and cannot activate automation', async (t
     headers: { Authorization: 'Bearer admin-test', 'Content-Type': 'application/json' },
     body: JSON.stringify({ text: 'متى تفتحون؟' }) });
   assert.equal(response.status, 200);
-  assert.match((await response.json()).reply, /12 ظهرًا/);
+  assert.match((await response.json()).reply, /12 الظهر إلى 3 الفجر/);
   const status = await fetch(`${base}/admin/whatsapp/status`, { headers: { Authorization: 'Bearer admin-test' } });
   assert.equal((await status.json()).whatsappAutoReplyEnabled, false);
 });
