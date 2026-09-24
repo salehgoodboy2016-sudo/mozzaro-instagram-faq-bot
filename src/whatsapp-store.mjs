@@ -45,10 +45,12 @@ export class WhatsAppStore {
       human_active=$2, handoff_reason=$3, updated_at=now()`, [id, active, reason]);
   }
 
-  // A Render environment flag may authorize one carefully scoped resume for
-  // the pilot conversation. The event ledger makes this operation one-shot
-  // across restarts and overlapping deployments.
-  async resumeConversationOnce(phoneId, sender) {
+  // The event ledger makes a conversation resume one-shot across retries,
+  // restarts, and overlapping deployments. Admin resumes carry a unique request id.
+  async resumeConversationOnce(phoneId, sender, requestId = null) {
+    if (sender !== '966545383080' || (requestId !== null && !/^[a-f0-9-]{36}$/i.test(String(requestId)))) {
+      throw new Error('Invalid one-time resume request');
+    }
     const conversationId = this.conversationId(phoneId, sender);
     const client = await this.pool.connect();
     try {
@@ -62,7 +64,8 @@ export class WhatsAppStore {
         return { outcome: 'not_found' };
       }
 
-      const operationId = `operator_resume:${conversationId}`;
+      const wasHumanActive = existing.rows[0].human_active === true;
+      const operationId = `operator_resume:${requestId || conversationId}`;
       const inserted = await client.query(`INSERT INTO whatsapp_events
         (event_id, conversation_id, event_type, outcome, event_at)
         VALUES ($1,$2,'operator_resume','applied',now()) ON CONFLICT DO NOTHING RETURNING event_id`,
@@ -75,7 +78,7 @@ export class WhatsAppStore {
       await client.query(`UPDATE whatsapp_conversations SET human_active=false,
         handoff_reason=NULL, updated_at=now() WHERE conversation_id=$1`, [conversationId]);
       await client.query('COMMIT');
-      return { outcome: 'resumed' };
+      return { outcome: 'resumed', wasHumanActive };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
       throw error;

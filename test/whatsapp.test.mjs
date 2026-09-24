@@ -584,6 +584,26 @@ test('admin preview requires its token and cannot activate automation', async (t
   assert.equal((await status.json()).whatsappAutoReplyEnabled, false);
 });
 
+test('test conversation resume is authenticated and sender-scoped', async (t) => {
+  const calls = [];
+  const kapsoService = { resumeApprovedTestConversation: async (sender, requestId) => {
+    calls.push({ sender, requestId }); return { outcome: 'resumed', wasHumanActive: true };
+  } };
+  const server = createWebhookServer({ adminApiToken: 'admin-test', kapsoService });
+  await new Promise((resolve) => server.listen(0, resolve)); t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}/admin/whatsapp/resume-test-conversation`;
+  const body = { sender: '966545383080', requestId: 'c474d9d9-3d92-4d2f-b459-cde576d7f111' };
+  assert.equal((await fetch(url, { method: 'POST', body: JSON.stringify(body) })).status, 401);
+  const headers = { Authorization: 'Bearer admin-test', 'Content-Type': 'application/json' };
+  assert.equal((await fetch(url, { method: 'POST', headers,
+    body: JSON.stringify({ ...body, sender: '966555555555' }) })).status, 400);
+  assert.equal(calls.length, 0);
+  const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { outcome: 'resumed', wasHumanActive: true });
+  assert.deepEqual(calls, [{ sender: body.sender, requestId: body.requestId }]);
+});
+
 test('deployment challenge self-test checks configured token without logging it', async (t) => {
   const server = createWebhookServer({ whatsappVerifyToken: 'private-test-token' });
   await new Promise((resolve) => server.listen(0, resolve)); t.after(() => server.close());

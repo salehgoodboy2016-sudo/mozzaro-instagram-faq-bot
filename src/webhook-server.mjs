@@ -257,6 +257,21 @@ export function createWebhookServer(overrides = {}) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ updated: true })); return;
       }
+      if (req.method === 'POST' && pathname === '/admin/whatsapp/resume-test-conversation') {
+        const raw = await readLimitedBody(req);
+        if (!raw) { res.writeHead(413); res.end('Payload too large'); return; }
+        let body; try { body = JSON.parse(raw.toString('utf8')); } catch {
+          res.writeHead(400); res.end('Invalid JSON'); return;
+        }
+        if (!automationService?.resumeApprovedTestConversation || body.sender !== '966545383080'
+          || !/^[a-f0-9-]{36}$/i.test(String(body.requestId || ''))) {
+          res.writeHead(400); res.end('Invalid test conversation resume'); return;
+        }
+        const result = await automationService.resumeApprovedTestConversation(body.sender, body.requestId);
+        res.writeHead(result.outcome === 'not_found' ? 404 : 200,
+          { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(result)); return;
+      }
       res.writeHead(404); res.end('Not found'); return;
     }
     if (req.method === 'GET' && req.url?.startsWith('/webhooks/instagram')) {

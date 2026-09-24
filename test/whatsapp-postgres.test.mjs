@@ -37,10 +37,15 @@ test('PostgreSQL migrations are repeatable and persist deduplication and handoff
 
   const resumableId = secondStore.conversationId('816217614914860', '966545383080');
   await secondStore.setHuman(resumableId, true, 'employee_activity');
-  assert.deepEqual(await secondStore.resumeConversationOnce('816217614914860', '966545383080'), { outcome: 'resumed' });
+  const resumeRequestId = 'c474d9d9-3d92-4d2f-b459-cde576d7f111';
+  assert.deepEqual(await secondStore.resumeConversationOnce('816217614914860', '966545383080', resumeRequestId),
+    { outcome: 'resumed', wasHumanActive: true });
   assert.equal((await secondStore.getConversation(resumableId)).human_active, false);
+  assert.equal((await secondStore.recent(10)).some((row) => row.event_type === 'operator_resume'
+    && row.outcome === 'applied' && row.conversation_id === resumableId), true);
   await secondStore.setHuman(resumableId, true, 'employee_takeover');
-  assert.deepEqual(await secondStore.resumeConversationOnce('816217614914860', '966545383080'), { outcome: 'already_consumed' });
+  assert.deepEqual(await secondStore.resumeConversationOnce('816217614914860', '966545383080', resumeRequestId),
+    { outcome: 'already_consumed' });
   assert.equal((await secondStore.getConversation(resumableId)).human_active, true);
 
   assert.equal(await secondStore.reserveAiBudget(event.id, 0.01, 1), true);

@@ -255,4 +255,11 @@ export class WhatsAppService {
     if (!this.store || !/^[a-f0-9]{64}$/.test(conversationId)) throw new Error('Invalid conversation');
     await this.store.setHuman(conversationId, active, active ? 'employee_takeover' : null);
   }
+
+  async resumeApprovedTestConversation(sender, requestId) {
+    if (!this.store || sender !== '966545383080' || !/^[a-f0-9-]{36}$/i.test(String(requestId || ''))) {
+      throw new Error('Invalid one-time test conversation resume');
+    }
+    return this.store.resumeConversationOnce(this.phoneNumberId, sender, requestId);
+  }
 }
