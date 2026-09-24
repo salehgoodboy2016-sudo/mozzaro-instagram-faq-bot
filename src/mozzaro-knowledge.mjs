@@ -105,6 +105,7 @@ export const MOZZARO_AI_TOPICS = Object.freeze([
   'catering_hours', 'catering_inclusions', 'catering_contact',
   'menu_pizza', 'menu_pasta', 'menu_appetizers', 'menu_sauces', 'menu_drinks',
   'menu_focaccia_sandwiches', 'menu_focaccia_bread', 'menu_all',
+  'catering_document_request',
   ...MOZZARO_KNOWLEDGE.menuItems.map(({ id }) => `menu_${id}`),
   ...MOZZARO_KNOWLEDGE.cateringPackages.map(({ id }) => `catering_${id}`),
   ...MOZZARO_KNOWLEDGE.cateringAddons.filter(({ priceSar }) => priceSar != null).map(({ id }) => `catering_addon_${id}`),

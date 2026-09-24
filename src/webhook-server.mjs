@@ -26,6 +26,8 @@ const env = {
 };
 const officialMenuPdf = await readFile(new URL('../assets/menu/mozzaro-menu.pdf', import.meta.url));
 const officialMenuEtag = `"${createHash('sha256').update(officialMenuPdf).digest('hex')}"`;
+const officialCateringPdf = await readFile(new URL('../assets/menu/mozzaro-catering.pdf', import.meta.url));
+const officialCateringEtag = `"${createHash('sha256').update(officialCateringPdf).digest('hex')}"`;
 const CLAUDE_KNOWLEDGE = Object.freeze({
   ...Object.fromEntries(Object.entries(MOZZARO_KNOWLEDGE).filter(([key]) => key !== 'localChickenText' && key !== 'cateringText')),
   cateringText: `لتفاصيل وحجوزات الكيترنق تواصلوا على ${MOZZARO_KNOWLEDGE.cateringContact} (${MOZZARO_KNOWLEDGE.cateringContactInternational}).`,
@@ -60,6 +62,8 @@ const config = {
   kapsoApiVersion: env.KAPSO_WHATSAPP_API_VERSION || 'v24.0',
   kapsoMenuDocumentEnabled: env.KAPSO_MENU_DOCUMENT_ENABLED === 'true',
   kapsoMenuDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf',
+  kapsoCateringDocumentEnabled: env.KAPSO_CATERING_DOCUMENT_ENABLED === 'true',
+  kapsoCateringDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/catering/mozzaro-catering.pdf',
   kapsoCoexistenceVerified: env.KAPSO_COEXISTENCE_VERIFIED === 'true',
   kapsoEmployeeEchoVerified: env.KAPSO_EMPLOYEE_ECHO_VERIFIED === 'true',
   whatsappAutomationAllowlist: String(env.WHATSAPP_AUTOMATION_ALLOWLIST || '').split(',').map((value) => value.trim()).filter(Boolean),
@@ -183,11 +187,16 @@ export function createWebhookServer(overrides = {}) {
   const automationService = kapsoService || whatsappService;
   return createServer(async (req, res) => {
     try {
-    if (['GET', 'HEAD'].includes(req.method) && new URL(req.url || '/', 'http://localhost').pathname === '/menu/mozzaro.pdf') {
-      res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': officialMenuPdf.length,
-        'Content-Disposition': "inline; filename*=UTF-8''%D9%85%D9%86%D9%8A%D9%88%20%D9%85%D9%88%D8%B2%D8%A7%D8%B1%D9%88.pdf",
-        'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff', ETag: officialMenuEtag });
-      res.end(req.method === 'HEAD' ? undefined : officialMenuPdf); return;
+    const pdfPath = new URL(req.url || '/', 'http://localhost').pathname;
+    if (['GET', 'HEAD'].includes(req.method) && ['/menu/mozzaro.pdf', '/catering/mozzaro-catering.pdf'].includes(pdfPath)) {
+      const pdf = pdfPath === '/menu/mozzaro.pdf' ? officialMenuPdf : officialCateringPdf;
+      const etag = pdfPath === '/menu/mozzaro.pdf' ? officialMenuEtag : officialCateringEtag;
+      const filename = pdfPath === '/menu/mozzaro.pdf' ? '%D9%85%D9%86%D9%8A%D9%88%20%D9%85%D9%88%D8%B2%D8%A7%D8%B1%D9%88.pdf'
+        : '%D9%83%D9%8A%D8%AA%D8%B1%D9%86%D9%82%20%D9%85%D9%88%D8%B2%D8%A7%D8%B1%D9%88.pdf';
+      res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': pdf.length,
+        'Content-Disposition': `inline; filename*=UTF-8''${filename}`,
+        'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff', ETag: etag });
+      res.end(req.method === 'HEAD' ? undefined : pdf); return;
     }
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -201,6 +210,7 @@ export function createWebhookServer(overrides = {}) {
         kapsoWebhookConfigured: Boolean(handlerConfig.kapsoWebhookSecret),
         kapsoAutoReplyEnabled: handlerConfig.kapsoEnabled,
         kapsoMenuDocumentEnabled: handlerConfig.kapsoMenuDocumentEnabled,
+        kapsoCateringDocumentEnabled: handlerConfig.kapsoCateringDocumentEnabled,
         claudeAiEnabled: handlerConfig.claudeAiEnabled === true && Boolean(handlerConfig.claudeApiKey && handlerConfig.claudeModel
           && handlerConfig.claudeMonthlyLimitUsd > 0 && handlerConfig.claudeInputUsdPerMillion > 0 && handlerConfig.claudeOutputUsdPerMillion > 0),
       })); return;
@@ -391,6 +401,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     enabled: config.kapsoEnabled, coexistenceVerified: config.kapsoCoexistenceVerified,
     phoneNumberId: config.kapsoPhoneNumberId, allowlist: config.whatsappAutomationAllowlist,
     menuDocumentEnabled: config.kapsoMenuDocumentEnabled, menuDocumentUrl: config.kapsoMenuDocumentUrl,
+    cateringDocumentEnabled: config.kapsoCateringDocumentEnabled, cateringDocumentUrl: config.kapsoCateringDocumentUrl,
     aiClient: claudeClient, aiMonthlyLimitUsd: config.claudeMonthlyLimitUsd, knowledge: CLAUDE_KNOWLEDGE });
   const server = createWebhookServer({ whatsappService, kapsoService });
   server.listen(config.port, () => {

@@ -55,7 +55,9 @@ test('approved Arabic greetings, suppliers, orders, catering, and combined quest
   assert.equal((combined.reply.match(/أي خدمة ثانية؟/g) || []).length, 1);
   assert.doesNotMatch(planWhatsAppReply('هل الدجاج محلي؟').reply, /محلي ومن ساديا/);
   const cateringContact = planWhatsAppReply('رقم الكيترنق؟');
-  assert.match(cateringContact.reply, /0565017314/);
+  assert.equal(cateringContact.type, 'catering_document');
+  assert.equal(cateringContact.reply, 'حياك الله، أكيد نوفر خدمة الكيترنق للمناسبات. تفضل ملف الكيترنق، فيه التفاصيل والأسعار. وإذا حاب تحجز أو عندك أي استفسار، يسعدنا نخدمك.');
+  assert.doesNotMatch(cateringContact.reply, /[A-Za-z]|0565017314|0545383080/);
   assert.doesNotMatch(cateringContact.reply, /0545383080/);
 });
 
@@ -165,6 +167,20 @@ test('official menu PDF is served unchanged over HTTPS-ready route', async (t) =
     'c74535c6138fea6abf33a8355704984a49f74251b6e7a26efd61cdb6d8dc7e4d');
 });
 
+test('official catering PDF is served unchanged at a separate document URL', async (t) => {
+  const server = createWebhookServer();
+  await new Promise((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/catering/mozzaro-catering.pdf`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'application/pdf');
+  assert.match(response.headers.get('content-disposition'), /filename\*=UTF-8''%D9%83%D9%8A%D8%AA%D8%B1%D9%86%D9%82%20%D9%85%D9%88%D8%B2%D8%A7%D8%B1%D9%88.pdf/);
+  assert.equal(bytes.subarray(0, 5).toString(), '%PDF-');
+  assert.equal(createHash('sha256').update(bytes).digest('hex'),
+    '0fc5cf6e927dc9320c016a3fe3bc50ad276b6af5375f8eaf30ca4e3267149db0');
+});
+
 test('menu PDF stays gated, then sends once only to the approved pilot number', async () => {
   const event = sample('أرسل المنيو', 'menu-pilot');
   event.entry[0].changes[0].value.messages[0].from = '966545383080';
@@ -186,6 +202,53 @@ test('menu PDF stays gated, then sends once only to the approved pilot number', 
   assert.equal(sent[0].caption, 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.');
   assert.deepEqual((await allowed.process(sample('أرسل المنيو', 'menu-other'))).outcomes, { allowlist_blocked: 1 });
   assert.equal(sent.length, 1);
+});
+
+test('catering document stays gated, then sends exact Arabic intro and distinct PDF once to the allowlisted pilot', async () => {
+  const event = sample('عندكم بوفيه للمناسبات؟', 'catering-pilot');
+  event.entry[0].changes[0].value.messages[0].from = '966545383080';
+  const store = new MemoryStore(), sent = [];
+  const client = { sendText: async (message) => { sent.push({ type: 'text', ...message }); },
+    sendDocument: async (message) => { sent.push({ type: 'document', ...message }); } };
+  const base = { store, client, phoneNumberId: phoneId, enabled: true, coexistenceVerified: true,
+    allowlist: ['966545383080'], cateringDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/catering/mozzaro-catering.pdf', now: () => now };
+  const gated = new WhatsAppService(base);
+  assert.deepEqual((await gated.process(event)).outcomes, { catering_document_pending_approval: 1 });
+  assert.equal(sent.length, 0);
+
+  const liveEvent = sample('عندكم بوفيه للمناسبات؟', 'catering-pilot-approved');
+  liveEvent.entry[0].changes[0].value.messages[0].from = '966545383080';
+  const allowed = new WhatsAppService({ ...base, cateringDocumentEnabled: true });
+  assert.deepEqual((await allowed.process(liveEvent)).outcomes, { sent: 1 });
+  assert.deepEqual((await allowed.process(liveEvent)).outcomes, { duplicate: 1 });
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].type, 'text');
+  assert.equal(sent[0].text, 'حياك الله، أكيد نوفر خدمة الكيترنق للمناسبات. تفضل ملف الكيترنق، فيه التفاصيل والأسعار. وإذا حاب تحجز أو عندك أي استفسار، يسعدنا نخدمك.');
+  assert.equal(sent[1].type, 'document');
+  assert.equal(sent[1].link, 'https://mozzaro-instagram-faq-bot.onrender.com/catering/mozzaro-catering.pdf');
+  assert.equal(sent[1].filename, 'كيترنق موزارو.pdf');
+  assert.equal(sent[1].caption, undefined);
+
+  const blocked = sample('أبي كيترنق', 'catering-not-allowlisted');
+  blocked.entry[0].changes[0].value.messages[0].from = '966512345678';
+  assert.deepEqual((await allowed.process(blocked)).outcomes, { allowlist_blocked: 1 });
+  assert.equal(sent.length, 2);
+});
+
+test('failed catering document delivery hands off and uses a short Arabic fallback without retrying', async () => {
+  const event = sample('منيو الكيترنق', 'catering-document-failed');
+  event.entry[0].changes[0].value.messages[0].from = '966545383080';
+  const store = new MemoryStore(), sent = [];
+  const client = { sendText: async (message) => { sent.push({ type: 'text', ...message }); },
+    sendDocument: async () => { const error = new Error('delivery failed'); error.status = 400; error.code = 131009; throw error; } };
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true, coexistenceVerified: true,
+    allowlist: ['966545383080'], cateringDocumentEnabled: true,
+    cateringDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/catering/mozzaro-catering.pdf', now: () => now });
+  assert.deepEqual((await service.process(event)).outcomes, { catering_document_fallback_sent: 1 });
+  assert.deepEqual((await service.process(event)).outcomes, { duplicate: 1 });
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /تعذّر إرسال ملف الكيترنق/);
+  assert.equal((await store.getConversation(store.conversationId(phoneId, '966545383080'))).human_active, true);
 });
 
 test('document rejection sends one short Arabic fallback and activates handoff', async () => {
@@ -234,35 +297,30 @@ test('catering addon prices match the PDF and by-request/distance charges have n
   ]);
 });
 
-test('catering FAQ handles guest counts, same-price pasta choices, optional Burrata, staffing, add-ons, and contact safely', () => {
-  const standard = planWhatsAppReply('كم باقة 20 شخص؟');
-  assert.match(standard.reply, /ستاندرد/); assert.match(standard.reply, /30 صنف إجمالي/);
-  assert.match(standard.reply, /تبدأ من 1499 ريال/); assert.doesNotMatch(standard.reply, /0545383080/);
-  const premium = planWhatsAppReply('عندي 50 شخص وش يناسبني؟');
-  assert.match(premium.reply, /بريميوم/); assert.match(premium.reply, /60 صنف إجمالي/);
-  assert.match(premium.reply, /تبدأ من 2799 ريال/);
-  assert.match(planWhatsAppReply('كم باقة ٢٠ شخص؟').reply, /ستاندرد/);
-  assert.match(planWhatsAppReply('عندكم كيترنق باستا؟').reply, /نفس باقات البيتزا وأسعارها الابتدائية/);
-  assert.match(planWhatsAppReply('أقدر أخليها كلها باستا؟').reply, /ما لها تسعيرة باقات منفصلة/);
-  assert.match(planWhatsAppReply('أقدر أخلط بيتزا وباستا؟').reply, /ضمن إجمالي عدد أصناف الباقة/);
-  assert.match(planWhatsAppReply('البوراتا إجبارية؟').reply, /اختيارية وليست إجبارية/);
-  assert.match(planWhatsAppReply('أقدر أشيل البوراتا؟').reply, /تستبدل أي أو كل الكمية/);
-  assert.match(planWhatsAppReply('الـ15 بيتزا غير الأربع بوراتا؟').reply, /ضمن إجمالي عدد أصناف الباقة وليست زيادة عليه/);
-  const women = planWhatsAppReply('عندكم عاملات؟');
-  assert.match(women.reply, /رجال فقط/); assert.match(women.reply, /لا تتوفر عاملات/);
-  assert.match(planWhatsAppReply('كم ساعة إضافية؟').reply, /200 ريال/);
-  assert.match(planWhatsAppReply('كم سعر تنظيم يوم ميلاد؟').reply, /250 ريال/);
-  const contact = planWhatsAppReply('وش رقم الكيترنق؟');
-  assert.match(contact.reply, /0565017314/); assert.match(contact.reply, /\+966565017314/);
-  assert.doesNotMatch(contact.reply, /0545383080/);
+test('Saudi Arabic and English catering questions use the official catering document, never the restaurant menu', () => {
+  const exact = 'حياك الله، أكيد نوفر خدمة الكيترنق للمناسبات. تفضل ملف الكيترنق، فيه التفاصيل والأسعار. وإذا حاب تحجز أو عندك أي استفسار، يسعدنا نخدمك.';
+  for (const text of ['عندكم كيترنق؟', 'أبي كيترنق', 'منيو الكيترنق', 'عندكم بوفيه للمناسبات؟',
+    'تجهيز حفلات', 'طلبات المناسبات', 'عندي مناسبة وأبي بيتزا', 'تسوون كيترنق للفعاليات؟',
+    'عندكم كيترينج؟', 'Do you offer catering?', 'What is your catering menu?']) {
+    const plan = planWhatsAppReply(text);
+    assert.equal(plan.type, 'catering_document', text);
+    assert.equal(plan.documentKind, 'catering', text);
+    assert.equal(plan.reply, exact, text);
+    assert.doesNotMatch(plan.reply, /[A-Za-z]|\+?966|0545383080/, text);
+  }
+  assert.equal(renderApprovedTopics(['catering_document_request']).type, 'catering_document');
+  assert.equal(renderApprovedTopics(['catering_basic']).type, 'catering_document');
+  assert.equal(planWhatsAppReply('وش أسعار المنيو كامل؟').type, 'document');
 });
 
-test('custom booking, final quote, outside-city service, and unknown catering requests activate handoff', () => {
+test('booking, quote, special arrangements, employee requests, complaints, and unsupported guest counts activate handoff', () => {
   for (const text of ['أبي أحجز كيترنق', 'أبي كيترنق عيد ميلاد', 'كم السعر النهائي لباقة Basic؟',
-    'تجون خارج الأحساء؟', 'أبغى نكهات معينة وكمية مختلفة', 'هل عندكم خيار غير موجود بالقائمة؟']) {
+    'تجون خارج الأحساء؟', 'أبغى نكهات معينة وكمية مختلفة', 'عندي ترتيبات خاصة للفعالية',
+    'هل عندكم خيار غير موجود بالقائمة؟', 'أبي أكلم موظف بخصوص الكيترنق', 'عندي شكوى عن الكيترنق']) {
     assert.equal(planWhatsAppReply(text).requiresHuman, true, text);
   }
   assert.equal(planWhatsAppReply('عندي 60 شخص وش يناسبني؟').requiresHuman, true);
+  assert.equal(planWhatsAppReply('عندكم عاملات للكيترنق؟').requiresHuman, true);
 });
 
 test('customer suggestions trigger immediate handoff without an automated answer', () => {
@@ -273,13 +331,9 @@ test('customer suggestions trigger immediate handoff without an automated answer
   }
 });
 
-test('Instagram catering answer uses the owner-approved number without changing Instagram reply routing', () => {
-  const answer = planWhatsAppReply('رقم الكيترنق؟').reply;
-  assert.match(answer, /0565017314/);
-  assert.doesNotMatch(answer, /0545383080/);
+test('shared Instagram catering knowledge remains unchanged', () => {
   assert.match(MOZZARO_KNOWLEDGE.cateringText, /0565017314/);
   assert.doesNotMatch(MOZZARO_KNOWLEDGE.cateringText, /0545383080/);
-  assert.match(renderApprovedTopics(['catering_basic']).reply, /15 صنف إجمالي/);
   assert.equal(MOZZARO_AI_TOPICS.includes('catering_burrata'), true);
 });
 

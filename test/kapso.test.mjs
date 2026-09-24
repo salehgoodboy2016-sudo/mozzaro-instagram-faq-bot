@@ -81,7 +81,7 @@ test('Kapso outbound transport is disabled by default and uses only API-key auth
   assert.doesNotMatch(calls[0].options.body, /private-test-key/);
 });
 
-test('Kapso document delivery uses official link, Arabic caption, and filename in one request', async () => {
+test('Kapso document delivery supports separate menu and catering documents through the official endpoint', async () => {
   const calls = [];
   const now = new Date('2026-09-24T00:00:00Z');
   const client = new KapsoClient({ apiKey: 'private-test-key', phoneNumberId: phoneId, enabled: true,
@@ -97,6 +97,14 @@ test('Kapso document delivery uses official link, Arabic caption, and filename i
   assert.deepEqual(body.document, { link: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf',
     caption, filename: 'منيو موزارو.pdf' });
   assert.doesNotMatch(calls[0].options.body, /private-test-key/);
+  await client.sendDocument({ to: '966545383080', link: 'https://mozzaro-instagram-faq-bot.onrender.com/catering/mozzaro-catering.pdf',
+    filename: 'كيترنق موزارو.pdf', customerMessageAt: now, now });
+  assert.equal(calls.length, 2);
+  const cateringBody = JSON.parse(calls[1].options.body);
+  assert.equal(cateringBody.type, 'document');
+  assert.deepEqual(cateringBody.document, {
+    link: 'https://mozzaro-instagram-faq-bot.onrender.com/catering/mozzaro-catering.pdf', filename: 'كيترنق موزارو.pdf',
+  });
   await assert.rejects(client.sendDocument({ to: '966545383080', link: 'http://example.com/menu.pdf',
     caption, filename: 'منيو موزارو.pdf', customerMessageAt: now, now }), /document URL/);
 });

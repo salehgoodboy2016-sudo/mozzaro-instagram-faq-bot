@@ -19,11 +19,12 @@ export class KapsoClient {
     if (url.protocol !== 'https:' || url.username || url.password || !url.hostname || url.search || url.hash) {
       throw new Error('Invalid WhatsApp document URL');
     }
-    if (!caption || caption.length > 1024 || filename !== 'منيو موزارو.pdf') {
+    if ((caption != null && (typeof caption !== 'string' || caption.length > 1024))
+      || !['منيو موزارو.pdf', 'كيترنق موزارو.pdf'].includes(filename)) {
       throw new Error('Invalid WhatsApp document');
     }
     return this.sendPayload({ to, customerMessageAt, now,
-      payload: { type: 'document', document: { link: url.href, caption, filename } } });
+      payload: { type: 'document', document: { link: url.href, ...(caption ? { caption } : {}), filename } } });
   }
 
   async sendPayload({ to, payload, customerMessageAt, now }) {
