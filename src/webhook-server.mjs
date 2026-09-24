@@ -328,7 +328,7 @@ export function createWebhookServer(overrides = {}) {
       if (kapsoService) {
         try {
           const result = await kapsoService.processEvents(events);
-          const handoffOutcomes = ['employee_activity', 'human_active', 'human_required', 'handoff_reply_reserved', 'handoff_reply_sent', 'handoff_reply_uncertain'];
+          const handoffOutcomes = ['employee_activity', 'human_active', 'human_active_pending', 'human_required', 'handoff_reply_reserved', 'handoff_reply_sent', 'handoff_reply_uncertain'];
           const handoffResult = Object.fromEntries(handoffOutcomes
             .filter((name) => result.outcomes[name])
             .map((name) => [name, result.outcomes[name]]));
@@ -455,4 +455,4 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   });
 }
 
-export { composeReply, extractEvents, processEvent, config };
+export { composeReply, extractEvents, processEvent, config, CLAUDE_KNOWLEDGE };

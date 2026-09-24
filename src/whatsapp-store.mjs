@@ -40,9 +40,10 @@ export class WhatsAppStore {
   }
 
   async setHuman(id, active, reason = null) {
-    await this.pool.query(`INSERT INTO whatsapp_conversations (conversation_id, human_active, handoff_reason)
-      VALUES ($1,$2,$3) ON CONFLICT (conversation_id) DO UPDATE SET
-      human_active=$2, handoff_reason=$3, updated_at=now()`, [id, active, reason]);
+    await this.pool.query(`INSERT INTO whatsapp_conversations
+      (conversation_id, human_active, handoff_reason, handoff_protected, handoff_expires_at)
+      VALUES ($1,$2,$3,$2,NULL) ON CONFLICT (conversation_id) DO UPDATE SET
+      human_active=$2, handoff_reason=$3, handoff_protected=$2, handoff_expires_at=NULL, updated_at=now()`, [id, active, reason]);
   }
 
   // The event ledger makes a conversation resume one-shot across retries,
@@ -76,7 +77,7 @@ export class WhatsAppStore {
       }
 
       await client.query(`UPDATE whatsapp_conversations SET human_active=false,
-        handoff_reason=NULL, updated_at=now() WHERE conversation_id=$1`, [conversationId]);
+        handoff_reason=NULL, handoff_protected=false, handoff_expires_at=NULL, updated_at=now() WHERE conversation_id=$1`, [conversationId]);
       await client.query('COMMIT');
       return { outcome: 'resumed', wasHumanActive };
     } catch (error) {
@@ -89,35 +90,163 @@ export class WhatsAppStore {
 
   async claimHumanHandoff(id, reason) {
     const result = await this.pool.query(`INSERT INTO whatsapp_conversations
-      (conversation_id, human_active, handoff_reason) VALUES ($1,true,$2)
+      (conversation_id, human_active, handoff_reason, handoff_protected, handoff_expires_at) VALUES ($1,true,$2,true,NULL)
       ON CONFLICT (conversation_id) DO UPDATE SET human_active=true,
-      handoff_reason=$2, updated_at=now()
+      handoff_reason=$2, handoff_protected=true, handoff_expires_at=NULL, updated_at=now()
       WHERE whatsapp_conversations.human_active=false
       RETURNING conversation_id`, [id, reason]);
     return result.rowCount === 1;
   }
 
   async recordEmployeeActivity(id, at) {
-    await this.pool.query(`INSERT INTO whatsapp_conversations (conversation_id, human_active, handoff_reason, last_employee_at)
-      VALUES ($1,true,'employee_activity',$2) ON CONFLICT (conversation_id) DO UPDATE SET
-      human_active=true, handoff_reason='employee_activity',
-      last_employee_at=GREATEST(COALESCE(whatsapp_conversations.last_employee_at, $2),$2), updated_at=now()`, [id, at]);
+    await this.pool.query(`INSERT INTO whatsapp_conversations
+      (conversation_id, human_active, handoff_reason, last_employee_at, handoff_protected, handoff_expires_at)
+      VALUES ($1,true,'employee_activity',$2,false,now()+interval '15 minutes')
+      ON CONFLICT (conversation_id) DO UPDATE SET
+      human_active=true,
+      handoff_reason=CASE WHEN whatsapp_conversations.handoff_protected
+        THEN whatsapp_conversations.handoff_reason ELSE 'employee_activity' END,
+      last_employee_at=CASE WHEN whatsapp_conversations.last_employee_at IS NULL
+        OR whatsapp_conversations.last_employee_at < $2::timestamptz THEN $2::timestamptz
+        ELSE whatsapp_conversations.last_employee_at END,
+      handoff_expires_at=CASE WHEN whatsapp_conversations.handoff_protected
+        THEN NULL ELSE now()+interval '15 minutes' END,
+      updated_at=now()`, [id, at]);
+  }
+
+  async queuePendingMessage(event, plan) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const conversation = await client.query(
+        'SELECT human_active FROM whatsapp_conversations WHERE conversation_id=$1 FOR UPDATE', [event.conversationId]);
+      if (!conversation.rows[0]?.human_active) { await client.query('ROLLBACK'); return false; }
+      const protectedHandoff = plan.requiresHuman === true;
+      const previous = await client.query('SELECT event_id FROM whatsapp_pending_messages WHERE conversation_id=$1', [event.conversationId]);
+      if (previous.rowCount && previous.rows[0].event_id !== event.id) {
+        await client.query(`UPDATE whatsapp_events SET outcome='pending_superseded',updated_at=now() WHERE event_id=$1`, [previous.rows[0].event_id]);
+      }
+      await client.query(`INSERT INTO whatsapp_pending_messages
+        (conversation_id,event_id,sender,message_text,message_type,event_at,status,claimed_at,queued_at)
+        VALUES ($1,$2,$3,$4,$5,$6,'pending',NULL,now())
+        ON CONFLICT (conversation_id) DO UPDATE SET event_id=$2,sender=$3,message_text=$4,
+          message_type=$5,event_at=$6,status='pending',claimed_at=NULL,queued_at=now()`,
+      [event.conversationId, event.id, event.sender, event.text || '', event.type || 'text', event.at]);
+      if (protectedHandoff) {
+        await client.query(`UPDATE whatsapp_conversations SET handoff_protected=true,
+          handoff_reason=$2,handoff_expires_at=NULL,updated_at=now() WHERE conversation_id=$1`,
+        [event.conversationId, plan.reason || 'human_required']);
+      }
+      await client.query(`UPDATE whatsapp_events SET outcome='human_active_pending',updated_at=now() WHERE event_id=$1`, [event.id]);
+      await client.query('COMMIT');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally { client.release(); }
+  }
+
+  async claimExpiredHandoffs({ conversationId = null, limit = 50 } = {}) {
+    const filter = conversationId ? 'AND c.conversation_id=$1' : '';
+    const values = conversationId ? [conversationId, limit] : [limit];
+    const limitParam = conversationId ? '$2' : '$1';
+    const due = await this.pool.query(`SELECT DISTINCT c.conversation_id FROM whatsapp_conversations c
+      LEFT JOIN whatsapp_pending_messages p ON p.conversation_id=c.conversation_id
+      WHERE ((c.human_active=true AND c.handoff_protected=false AND c.handoff_reason='employee_activity'
+        AND c.handoff_expires_at <= now()) OR (c.human_active=false AND p.status='processing'
+        AND p.claimed_at < now()-interval '5 minutes')) ${filter}
+      ORDER BY c.handoff_expires_at LIMIT ${limitParam}`, values);
+    const claimed = [];
+    for (const row of due.rows) {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        const resumed = await client.query(`UPDATE whatsapp_conversations SET human_active=false,
+          handoff_reason=NULL,handoff_expires_at=NULL,updated_at=now()
+          WHERE conversation_id=$1 AND human_active=true AND handoff_protected=false
+          AND handoff_reason='employee_activity' AND handoff_expires_at <= now()
+          RETURNING last_employee_at`, [row.conversation_id]);
+        let timedOut = resumed.rowCount > 0;
+        if (!timedOut) {
+          const recoverable = await client.query(`SELECT p.event_id FROM whatsapp_pending_messages p
+            JOIN whatsapp_conversations c ON c.conversation_id=p.conversation_id
+            WHERE p.conversation_id=$1 AND p.status='processing' AND p.claimed_at < now()-interval '5 minutes'
+              AND c.human_active=false`, [row.conversation_id]);
+          if (!recoverable.rowCount) { await client.query('ROLLBACK'); continue; }
+        }
+        const pending = await client.query(`SELECT event_id,conversation_id,sender,message_text,message_type,event_at
+          FROM whatsapp_pending_messages WHERE conversation_id=$1 AND
+          (status='pending' OR (status='processing' AND claimed_at < now()-interval '5 minutes'))`, [row.conversation_id]);
+        if (pending.rowCount) {
+          const message = pending.rows[0];
+          const claimedMessage = await client.query(`UPDATE whatsapp_pending_messages SET status='processing',claimed_at=now()
+            WHERE conversation_id=$1 AND event_id=$2 AND (status='pending'
+              OR (status='processing' AND claimed_at < now()-interval '5 minutes')) RETURNING event_id`,
+          [message.conversation_id, message.event_id]);
+          if (!claimedMessage.rowCount) { await client.query('ROLLBACK'); continue; }
+          await client.query(`UPDATE whatsapp_events SET outcome='received',updated_at=now() WHERE event_id=$1`, [message.event_id]);
+          claimed.push({ id: message.event_id, kind: 'incoming', phoneId: null, sender: message.sender,
+            text: message.message_text, type: message.message_type, at: message.event_at,
+            conversationId: message.conversation_id, pending: true });
+        }
+        if (timedOut) {
+          const employeeAt = resumed.rows[0].last_employee_at;
+          const auditId = `handoff_timeout:${row.conversation_id}:${new Date(employeeAt).toISOString()}`;
+          await client.query(`INSERT INTO whatsapp_events(event_id,conversation_id,event_type,outcome,event_at)
+            VALUES ($1,$2,'handoff_timeout','ai_resumed',now()) ON CONFLICT DO NOTHING`, [auditId, row.conversation_id]);
+        }
+        await client.query('COMMIT');
+        if (timedOut) claimed.push({ kind: 'audit', conversationId: row.conversation_id, hadPending: pending.rowCount > 0 });
+        else if (pending.rowCount) claimed.push({ kind: 'recovered', conversationId: row.conversation_id });
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally { client.release(); }
+    }
+    return claimed;
+  }
+
+  async completePendingMessage(eventId, outcome) {
+    if (outcome === 'human_active_pending') return;
+    await this.pool.query(`DELETE FROM whatsapp_pending_messages WHERE event_id=$1`, [eventId]);
   }
 
   async recordCustomerActivity(id, at) {
     await this.pool.query(`INSERT INTO whatsapp_conversations (conversation_id, latest_customer_at)
       VALUES ($1,$2) ON CONFLICT (conversation_id) DO UPDATE SET
-      latest_customer_at=GREATEST(COALESCE(whatsapp_conversations.latest_customer_at, $2),$2), updated_at=now()`, [id, at]);
+      latest_customer_at=CASE WHEN whatsapp_conversations.latest_customer_at IS NULL
+        OR whatsapp_conversations.latest_customer_at < $2::timestamptz THEN $2::timestamptz
+        ELSE whatsapp_conversations.latest_customer_at END, updated_at=now()`, [id, at]);
   }
 
   async reserveSend(eventId, conversationId, eventAt) {
-    const result = await this.pool.query(`UPDATE whatsapp_events SET outcome='send_reserved', updated_at=now()
-      WHERE event_id=$1 AND outcome='received' AND NOT EXISTS (
-        SELECT 1 FROM whatsapp_conversations WHERE conversation_id=$2 AND (
-          human_active=true OR last_employee_at >= $3 OR latest_customer_at > $3
-        )
-      ) RETURNING event_id`, [eventId, conversationId, eventAt]);
-    return result.rowCount === 1;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const conversation = await client.query(`SELECT human_active,last_employee_at,latest_customer_at
+        FROM whatsapp_conversations WHERE conversation_id=$1 FOR UPDATE`, [conversationId]);
+      if (!conversation.rowCount || conversation.rows[0].human_active
+        || (conversation.rows[0].last_employee_at && new Date(conversation.rows[0].last_employee_at) >= new Date(eventAt))
+        || (conversation.rows[0].latest_customer_at && new Date(conversation.rows[0].latest_customer_at) > new Date(eventAt))) {
+        await client.query('ROLLBACK'); return false;
+      }
+      // Echo events are persisted before the handoff state update. Checking the
+      // event ledger here closes the Claude-preparation race at the final send
+      // boundary, even if the echo transaction is still updating conversation state.
+      const echo = await client.query(`SELECT 1 FROM whatsapp_events employee
+        JOIN whatsapp_events customer ON customer.event_id=$1
+        WHERE employee.conversation_id=$2 AND employee.event_type='employee_echo'
+          AND employee.created_at > customer.created_at LIMIT 1`, [eventId, conversationId]);
+      if (echo.rowCount) { await client.query('ROLLBACK'); return false; }
+      const reserved = await client.query(`UPDATE whatsapp_events SET outcome='send_reserved',updated_at=now()
+        WHERE event_id=$1 AND outcome='received' RETURNING event_id`, [eventId]);
+      if (!reserved.rowCount) { await client.query('ROLLBACK'); return false; }
+      await client.query('COMMIT');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally { client.release(); }
   }
 
   async getAiContext(conversationId) {

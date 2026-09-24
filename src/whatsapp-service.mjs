@@ -72,13 +72,14 @@ export class WhatsAppService {
   async processEvents(events) {
     const outcomes = {};
     for (const event of events) {
-      const outcome = await this.processEvent(event);
+      const outcome = await this.processEvent(event, { persisted: event.pending === true });
+      if (event.pending) await this.store.completePendingMessage(event.id, outcome);
       outcomes[outcome] = (outcomes[outcome] || 0) + 1;
     }
     return { count: events.length, outcomes };
   }
 
-  async processEvent(event) {
+  async processEvent(event, { persisted = false } = {}) {
     if (event.kind === 'coexistence_pending') return 'coexistence_pending';
     if (!this.store) return 'observed_no_store';
     if (event.kind === 'status') {
@@ -93,13 +94,16 @@ export class WhatsAppService {
       if (!inserted) return 'duplicate';
       await this.store.recordEmployeeActivity(conversationId, event.at);
       await this.store.setOutcome(event.id, 'human_active');
+      console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'activated', reason: 'employee_activity' }));
       return 'employee_activity';
     }
     if (event.phoneId !== this.phoneNumberId) return 'other_phone';
     if (!event.at || event.at > new Date(this.now().getTime() + 5 * 60_000)) return 'invalid_timestamp';
     const conversationId = this.store.conversationId(event.phoneId, event.sender);
-    const inserted = await this.store.recordEvent({ id: event.id, conversationId, type: 'incoming', at: event.at });
-    if (!inserted) return 'duplicate';
+    if (!persisted) {
+      const inserted = await this.store.recordEvent({ id: event.id, conversationId, type: 'incoming', at: event.at });
+      if (!inserted) return 'duplicate';
+    }
     // The legacy Meta webhook is retained as a disabled observer while Kapso
     // handles customer automation. It must not mutate conversation activity or
     // claim handoff for inbound messages; employee echoes above remain active.
@@ -112,7 +116,7 @@ export class WhatsAppService {
       return 'allowlist_blocked';
     }
     const conversation = await this.store.getConversation(conversationId);
-    if (conversation?.last_employee_at && event.at <= new Date(conversation.last_employee_at)) {
+    if (!event.pending && conversation?.last_employee_at && event.at <= new Date(conversation.last_employee_at)) {
       await this.store.setOutcome(event.id, 'before_employee_activity');
       return 'before_employee_activity';
     }
@@ -122,8 +126,27 @@ export class WhatsAppService {
     }
     await this.store.recordCustomerActivity(conversationId, event.at);
     if (conversation?.human_active) {
-      await this.store.setOutcome(event.id, 'human_active');
-      return 'human_active';
+      const pendingPlan = planWhatsAppReply(event.text, this.now());
+      const queued = await this.store.queuePendingMessage({ ...event, conversationId }, pendingPlan);
+      if (queued) {
+        if (pendingPlan.requiresHuman) console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'protected', reason: pendingPlan.reason }));
+        const released = await this.store.claimExpiredHandoffs({ conversationId });
+        for (const item of released.filter((value) => value.kind === 'audit')) {
+          console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'timeout', aiResumed: true, pendingInquiry: item.hadPending }));
+        }
+        const pending = released.find((item) => item.kind === 'incoming');
+        if (pending) {
+          console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'ai_resumed', pendingInquiry: true }));
+          const outcome = await this.processEvent({ ...pending, phoneId: this.phoneNumberId }, { persisted: true });
+          await this.store.completePendingMessage(pending.id, outcome);
+          return outcome;
+        }
+        console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'customer_message_queued' }));
+        return 'human_active_pending';
+      }
+      // A timeout may have won the row lock after the conversation was read.
+      // Re-read before deciding whether to continue with this already-recorded event.
+      if ((await this.store.getConversation(conversationId))?.human_active) return 'human_active_pending';
     }
     let plan = planWhatsAppReply(event.text, this.now());
     let aiContext = [];
@@ -166,6 +189,7 @@ export class WhatsAppService {
     }
     if (plan.requiresHuman) {
       const firstHandoff = await this.store.claimHumanHandoff(conversationId, plan.reason);
+      if (firstHandoff) console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'activated', reason: plan.reason }));
       if (plan.reason !== 'unknown_question' || !firstHandoff || !this.enabled ||
         this.now().getTime() - event.at.getTime() >= 24 * 60 * 60_000) {
         await this.store.setOutcome(event.id, 'human_required');
@@ -200,6 +224,25 @@ export class WhatsAppService {
       return 'outside_service_window';
     }
     if (!await this.store.reserveSend(event.id, conversationId, event.at)) {
+      const currentConversation = await this.store.getConversation(conversationId);
+      if (currentConversation?.human_active) {
+        const queued = await this.store.queuePendingMessage({ ...event, conversationId }, plan);
+        if (queued) {
+          const released = await this.store.claimExpiredHandoffs({ conversationId });
+          for (const item of released.filter((value) => value.kind === 'audit')) {
+            console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'timeout', aiResumed: true, pendingInquiry: item.hadPending }));
+          }
+          const pending = released.find((item) => item.kind === 'incoming');
+          if (pending) {
+            console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'ai_resumed', pendingInquiry: true }));
+            const outcome = await this.processEvent({ ...pending, phoneId: this.phoneNumberId }, { persisted: true });
+            await this.store.completePendingMessage(pending.id, outcome);
+            return outcome;
+          }
+          console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'customer_message_queued' }));
+          return 'human_active_pending';
+        }
+      }
       await this.store.setOutcome(event.id, 'send_suppressed');
       return 'send_suppressed';
     }

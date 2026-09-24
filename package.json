@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/webhook-server.mjs",
     "test": "node --test test/*.test.mjs",
-    "db:migrate": "node scripts/migrate-whatsapp-db.mjs"
+    "db:migrate": "node scripts/migrate-whatsapp-db.mjs",
+    "whatsapp:handoff-sweep": "node scripts/process-whatsapp-handoffs.mjs"
   },
   "engines": {
     "node": ">=22"

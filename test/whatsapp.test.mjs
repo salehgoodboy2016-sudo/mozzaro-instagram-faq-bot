@@ -26,13 +26,50 @@ class MemoryStore {
   }
   async setOutcome(id, outcome) { this.events.get(id).outcome = outcome; }
   async getConversation(id) { return this.conversations.get(id) || null; }
-  async setHuman(id, active, reason) { this.conversations.set(id, { ...(this.conversations.get(id) || {}), human_active: active, handoff_reason: reason }); }
+  async setHuman(id, active, reason) { this.conversations.set(id, { ...(this.conversations.get(id) || {}),
+    human_active: active, handoff_reason: reason, handoff_protected: active, handoff_expires_at: null }); }
   async claimHumanHandoff(id, reason) {
     if (this.conversations.get(id)?.human_active) return false;
-    await this.setHuman(id, true, reason); return true;
+    this.conversations.set(id, { ...(this.conversations.get(id) || {}), human_active: true, handoff_reason: reason,
+      handoff_protected: true, handoff_expires_at: null }); return true;
   }
   async recordCustomerActivity(id, at) { this.conversations.set(id, { ...(this.conversations.get(id) || {}), latest_customer_at: at }); }
-  async recordEmployeeActivity(id, at) { this.conversations.set(id, { ...(this.conversations.get(id) || {}), human_active: true, last_employee_at: at }); }
+  async recordEmployeeActivity(id, at) {
+    const current = this.conversations.get(id) || {};
+    this.conversations.set(id, { ...current, human_active: true,
+      handoff_reason: current.handoff_protected ? current.handoff_reason : 'employee_activity',
+      handoff_protected: current.handoff_protected || false,
+      handoff_expires_at: current.handoff_protected ? null : new Date(new Date(at).getTime() + 15 * 60_000), last_employee_at: at });
+  }
+  async queuePendingMessage(event, plan) {
+    const conversation = this.conversations.get(event.conversationId);
+    if (!conversation?.human_active) return false;
+    this.pending ||= new Map();
+    const prior = this.pending.get(event.conversationId);
+    if (prior && prior.id !== event.id) this.events.get(prior.id).outcome = 'pending_superseded';
+    this.pending.set(event.conversationId, { ...event, pending: true, outcome: 'pending' });
+    if (plan.requiresHuman) {
+      conversation.handoff_protected = true; conversation.handoff_reason = plan.reason; conversation.handoff_expires_at = null;
+    }
+    this.events.get(event.id).outcome = 'human_active_pending';
+    return true;
+  }
+  async claimExpiredHandoffs({ conversationId = null } = {}) {
+    const due = [...this.conversations.entries()].filter(([id, c]) => (!conversationId || conversationId === id)
+      && c.human_active && !c.handoff_protected && c.handoff_reason === 'employee_activity'
+      && c.handoff_expires_at && c.handoff_expires_at <= now);
+    const result = [];
+    for (const [id, c] of due) {
+      c.human_active = false; c.handoff_reason = null; c.handoff_expires_at = null;
+      result.push({ kind: 'audit', conversationId: id });
+      const pending = this.pending?.get(id);
+      if (pending) { pending.outcome = 'processing'; this.events.get(pending.id).outcome = 'received'; result.push(pending); }
+    }
+    return result;
+  }
+  async completePendingMessage(id, outcome) {
+    if (outcome !== 'human_active_pending') for (const [key, message] of this.pending || []) if (message.id === id) this.pending.delete(key);
+  }
   async getAiContext() { return []; }
   async reserveAiBudget() { return true; }
   async recordAiUsage() {}
@@ -554,7 +591,7 @@ test('explicit general launch allows every inbound sender but preserves existing
   assert.deepEqual((await service.process(sample('متى تفتحون؟', 'general-launch', '1790190000', '966599999999'))).outcomes, { sent: 1 });
   const employeeManagedId = store.conversationId(phoneId, '966588888888');
   await store.setHuman(employeeManagedId, true, 'employee_takeover');
-  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'existing-handoff', '1790190000', '966588888888'))).outcomes, { human_active: 1 });
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'existing-handoff', '1790190000', '966588888888'))).outcomes, { human_active_pending: 1 });
   assert.equal(client.sent.length, 1);
   assert.equal((await store.getConversation(employeeManagedId)).human_active, true);
 });
@@ -565,7 +602,7 @@ test('human takeover suppresses replies and can be resumed', async () => {
     coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   const id = store.conversationId(phoneId, '966500000001');
   await service.handoff(id, true);
-  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'human-1'))).outcomes, { human_active: 1 });
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'human-1'))).outcomes, { human_active_pending: 1 });
   await service.handoff(id, false);
   assert.deepEqual((await service.process(sample('متى تفتحون؟', 'human-2'))).outcomes, { sent: 1 });
   assert.equal(client.sent.length, 1);
@@ -576,7 +613,7 @@ test('unknown question gets one safe fallback and persistent handoff', async () 
   const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
     coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   assert.deepEqual((await service.process(sample('هل عندكم خصومات اليوم؟', 'unknown-1'))).outcomes, { handoff_reply_sent: 1 });
-  assert.deepEqual((await service.process(sample('وش أسعاركم؟', 'unknown-2'))).outcomes, { human_active: 1 });
+  assert.deepEqual((await service.process(sample('وش أسعاركم؟', 'unknown-2'))).outcomes, { human_active_pending: 1 });
   assert.equal(client.sent.length, 1);
 });
 
@@ -600,8 +637,114 @@ test('official Coexistence message echo activates human handoff without replying
     }],
   } }] }] };
   assert.deepEqual((await service.process(echo)).outcomes, { employee_activity: 1 });
-  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'after-employee', '1790190001'))).outcomes, { human_active: 1 });
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'after-employee', '1790190001'))).outcomes, { human_active_pending: 1 });
   assert.equal(client.sent.length, 0);
+});
+
+test('employee activity pauses AI and each new employee message restarts the database-backed timeout', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowAll: true, now: () => now });
+  const sender = '966500000041', conversationId = store.conversationId(phoneId, sender);
+  const echo = (id, timestamp) => ({ entry: [{ changes: [{ field: 'smb_message_echoes', value: {
+    metadata: { phone_number_id: phoneId }, message_echoes: [{ id, to: sender, timestamp }],
+  } }] }] });
+  assert.deepEqual((await service.process(echo('employee-first', '1790190000'))).outcomes, { employee_activity: 1 });
+  const firstExpiry = (await store.getConversation(conversationId)).handoff_expires_at;
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'paused-1', '1790190001', sender))).outcomes,
+    { human_active_pending: 1 });
+  assert.equal(client.sent.length, 0);
+  assert.deepEqual((await service.process(echo('employee-second', '1790190010'))).outcomes, { employee_activity: 1 });
+  assert.ok((await store.getConversation(conversationId)).handoff_expires_at > firstExpiry);
+  assert.equal((await store.getConversation(conversationId)).human_active, true);
+});
+
+test('messages during employee pause retain only the latest unanswered inquiry and resume after timeout', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowAll: true, now: () => now });
+  const sender = '966500000042', conversationId = store.conversationId(phoneId, sender);
+  const echo = { entry: [{ changes: [{ field: 'smb_message_echoes', value: { metadata: { phone_number_id: phoneId },
+    message_echoes: [{ id: 'employee-pause', to: sender, timestamp: '1790190000' }] } }] }] };
+  await service.process(echo);
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'pending-old', '1790190001', sender))).outcomes,
+    { human_active_pending: 1 });
+  assert.deepEqual((await service.process(sample('كيف اقدر اطلب؟', 'pending-latest', '1790190002', sender))).outcomes,
+    { human_active_pending: 1 });
+  assert.equal(store.events.get('incoming:pending-old').outcome, 'pending_superseded');
+  assert.equal(store.pending.get(conversationId).id, 'incoming:pending-latest');
+  store.conversations.get(conversationId).handoff_expires_at = new Date(now.getTime() - 1);
+  const due = await store.claimExpiredHandoffs({ conversationId });
+  const queued = due.filter((event) => event.kind === 'incoming');
+  assert.equal((await service.processEvents(queued.map((event) => ({ ...event, phoneId })))).outcomes.sent, 1);
+  assert.equal(client.sent.length, 1);
+  assert.match(client.sent[0].text, /تقدر تطلب/);
+  assert.equal((await store.getConversation(conversationId)).human_active, false);
+  assert.equal(store.pending.has(conversationId), false);
+  assert.deepEqual((await service.processEvents([{ ...queued[0], phoneId, pending: true }])).outcomes,
+    { send_suppressed: 1 });
+  assert.equal(client.sent.length, 1);
+});
+
+test('complaints and explicit employee requests remain protected after employee timeout', async () => {
+  for (const [sender, text, id] of [['966500000043', 'طلبي ناقص وأبي أشتكي', 'protected-complaint'],
+    ['966500000044', 'أبي أكلم موظف', 'protected-human'],
+    ['966500000048', 'أبي أحجز كيترنق لـ ٥٠ شخص', 'protected-booking'],
+    ['966500000049', 'أبي عرض سعر خاص للكيترنق', 'protected-quote']]) {
+    const store = new MemoryStore(), client = new MockWhatsAppClient();
+    const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+      coexistenceVerified: true, allowAll: true, now: () => now });
+    const conversationId = store.conversationId(phoneId, sender);
+    await service.process({ entry: [{ changes: [{ field: 'smb_message_echoes', value: { metadata: { phone_number_id: phoneId },
+      message_echoes: [{ id: `${id}-echo`, to: sender, timestamp: '1790190000' }] } }] }] });
+    assert.deepEqual((await service.process(sample(text, id, '1790190001', sender))).outcomes, { human_active_pending: 1 });
+    const conversation = await store.getConversation(conversationId);
+    assert.equal(conversation.handoff_protected, true);
+    assert.equal(conversation.handoff_expires_at, null);
+    conversation.handoff_expires_at = new Date(now.getTime() - 1);
+    assert.deepEqual(await store.claimExpiredHandoffs({ conversationId }), []);
+    assert.equal(conversation.human_active, true);
+    assert.equal(client.sent.length, 0);
+  }
+});
+
+test('handoff timeouts are isolated per conversation', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowAll: true, now: () => now });
+  const staffEcho = (id, sender) => ({ entry: [{ changes: [{ field: 'smb_message_echoes', value: {
+    metadata: { phone_number_id: phoneId }, message_echoes: [{ id, to: sender, timestamp: '1790190000' }],
+  } }] }] });
+  await service.process(staffEcho('echo-a', '966500000045'));
+  await service.process(staffEcho('echo-b', '966500000046'));
+  const first = store.conversations.get(store.conversationId(phoneId, '966500000045'));
+  const second = store.conversations.get(store.conversationId(phoneId, '966500000046'));
+  first.handoff_expires_at = new Date(now.getTime() - 1);
+  const due = await store.claimExpiredHandoffs();
+  assert.equal(due.filter((item) => item.kind === 'audit').length, 1);
+  assert.equal(first.human_active, false);
+  assert.equal(second.human_active, true);
+});
+
+test('employee activity during Claude preparation wins before outbound reservation', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  let beginAi;
+  let finishAi;
+  const aiStarted = new Promise((resolve) => { beginAi = resolve; });
+  const aiResult = new Promise((resolve) => { finishAi = resolve; });
+  const aiClient = { enabled: true, estimateUsd: () => 0.001,
+    answer: async () => { beginAi(); return aiResult; } };
+  const service = new WhatsAppService({ store, client, aiClient, knowledge: {}, phoneNumberId: phoneId,
+    enabled: true, coexistenceVerified: true, allowAll: true, aiMonthlyLimitUsd: 5, now: () => now });
+  const sender = '966500000047';
+  const inFlight = service.process(sample('متى تفتحون؟', 'ai-race', '1790190000', sender));
+  await aiStarted;
+  await service.process({ entry: [{ changes: [{ field: 'smb_message_echoes', value: { metadata: { phone_number_id: phoneId },
+    message_echoes: [{ id: 'staff-during-ai', to: sender, timestamp: '1790190001' }] } }] }] });
+  finishAi({ action: 'answer', topics: ['hours'], inputTokens: 1, outputTokens: 1 });
+  assert.deepEqual((await inFlight).outcomes, { human_active_pending: 1 });
+  assert.equal(client.sent.length, 0);
+  assert.equal((await store.getConversation(store.conversationId(phoneId, sender))).human_active, true);
 });
 
 test('outbound transport enforces disabled state, service window, and API errors', async () => {
