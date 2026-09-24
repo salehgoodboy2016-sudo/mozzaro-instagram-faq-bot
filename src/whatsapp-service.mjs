@@ -131,32 +131,30 @@ export class WhatsAppService {
       const estimateUsd = this.aiClient.estimateUsd([...aiContext, { role: 'user', content: event.text }], 220, this.knowledge);
       const reserved = await this.store.reserveAiBudget?.(event.id, estimateUsd, this.aiMonthlyLimitUsd);
       if (!reserved) {
-        await this.store.claimHumanHandoff(conversationId, 'ai_budget_exceeded');
-        await this.store.setOutcome(event.id, 'ai_budget_exceeded');
-        return 'ai_budget_exceeded';
-      }
-      try {
-        const ai = await this.aiClient.answer({ userText: event.text, context: aiContext, knowledge: this.knowledge });
-        const actualUsd = ai.inputTokens * this.aiClient.inputUsdPerMillion / 1_000_000
-          + ai.outputTokens * this.aiClient.outputUsdPerMillion / 1_000_000;
-        await this.store.recordAiUsage?.(event.id, actualUsd);
-        console.log(JSON.stringify({ service: 'claude-assistant', outcome: 'completed', inputTokens: ai.inputTokens,
-          outputTokens: ai.outputTokens, estimatedCostUsd: Number(actualUsd.toFixed(6)) }));
-        if (ai.action === 'handoff') {
-          await this.store.claimHumanHandoff(conversationId, 'ai_handoff');
-          await this.store.setOutcome(event.id, 'human_required');
-          return 'human_required';
+        console.log(JSON.stringify({ service: 'claude-assistant', outcome: 'budget_exceeded', fallback: 'approved_faq_or_handoff' }));
+      } else {
+        try {
+          const ai = await this.aiClient.answer({ userText: event.text, context: aiContext, knowledge: this.knowledge });
+          const actualUsd = ai.inputTokens * this.aiClient.inputUsdPerMillion / 1_000_000
+            + ai.outputTokens * this.aiClient.outputUsdPerMillion / 1_000_000;
+          await this.store.recordAiUsage?.(event.id, actualUsd);
+          console.log(JSON.stringify({ service: 'claude-assistant', outcome: 'completed', inputTokens: ai.inputTokens,
+            outputTokens: ai.outputTokens, estimatedCostUsd: Number(actualUsd.toFixed(6)) }));
+          if (ai.action === 'handoff') {
+            await this.store.claimHumanHandoff(conversationId, 'ai_handoff');
+            await this.store.setOutcome(event.id, 'human_required');
+            return 'human_required';
+          }
+          const approvedPlan = renderApprovedTopics(ai.topics, this.now());
+          if (!approvedPlan) {
+            await this.store.claimHumanHandoff(conversationId, 'ai_no_verified_answer');
+            await this.store.setOutcome(event.id, 'human_required');
+            return 'human_required';
+          }
+          plan = approvedPlan;
+        } catch (error) {
+          console.error(JSON.stringify({ service: 'claude-assistant', outcome: 'unavailable', status: error.status ?? null, code: error.code ?? null }));
         }
-        const approvedPlan = renderApprovedTopics(ai.topics, this.now());
-        if (!approvedPlan) {
-          await this.store.claimHumanHandoff(conversationId, 'ai_no_verified_answer');
-          await this.store.setOutcome(event.id, 'human_required');
-          return 'human_required';
-        }
-        plan = approvedPlan;
-      } catch (error) {
-        await this.store.setOutcome(event.id, 'ai_unavailable');
-        console.error(JSON.stringify({ service: 'claude-assistant', outcome: 'unavailable', status: error.status ?? null, code: error.code ?? null }));
       }
     }
     if (plan.requiresHuman) {

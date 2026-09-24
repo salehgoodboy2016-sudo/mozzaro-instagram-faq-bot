@@ -429,16 +429,32 @@ test('Claude is never called for a non-allowlisted customer or complaint', async
   assert.equal(calls, 0);
 });
 
-test('monthly Claude budget exhaustion pauses and hands off without sending', async () => {
+test('monthly Claude budget exhaustion falls back to approved FAQ and hands unknown questions to staff', async () => {
   const store = new MemoryStore(); store.reserveAiBudget = async () => false;
   const client = new MockWhatsAppClient(); let calls = 0;
   const aiClient = { enabled: true, estimateUsd: () => 0.001, answer: async () => { calls++; } };
   const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 0.01, knowledge: {}, phoneNumberId: phoneId,
     enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
-  assert.deepEqual((await service.process(sample('وش عندكم؟', 'ai-budget'))).outcomes, { ai_budget_exceeded: 1 });
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'ai-budget-known'))).outcomes, { sent: 1 });
   assert.equal(calls, 0);
-  assert.equal(client.sent.length, 0);
+  assert.match(client.sent[0].text, /12 الظهر إلى 3 الفجر/);
+  assert.notEqual(store.conversations.get(store.conversationId(phoneId, '966500000001'))?.human_active, true);
+
+  assert.deepEqual((await service.process(sample('هل عندكم خصومات اليوم؟', 'ai-budget-unknown'))).outcomes, { handoff_reply_sent: 1 });
+  assert.equal(calls, 0);
+  assert.equal(client.sent.length, 2);
+  assert.match(client.sent[1].text, /بنحوّل استفسارك للفريق/);
   assert.equal(store.conversations.get(store.conversationId(phoneId, '966500000001')).human_active, true);
+});
+
+test('Claude failure uses the approved FAQ response without fabricating a fallback', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const aiClient = { enabled: true, estimateUsd: () => 0.001, answer: async () => { throw Object.assign(new Error('offline'), { code: 'ETIMEDOUT' }); } };
+  const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 0.01, knowledge: {}, phoneNumberId: phoneId,
+    enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'ai-offline'))).outcomes, { sent: 1 });
+  assert.equal(client.sent.length, 1);
+  assert.match(client.sent[0].text, /12 الظهر إلى 3 الفجر/);
 });
 
 test('status events are not incoming messages', () => {
