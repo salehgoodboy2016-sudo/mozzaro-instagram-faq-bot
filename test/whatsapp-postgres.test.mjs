@@ -9,7 +9,7 @@ test('PostgreSQL migrations are repeatable and persist deduplication and handoff
   const adapter = database.adapters.createPg();
   const pool = new adapter.Pool();
 
-  assert.deepEqual(await runMigrations(pool, { advisoryLock: false }), ['001_whatsapp_state.sql', '002_whatsapp_ai.sql', '003_handoff_timeout.sql']);
+  assert.deepEqual(await runMigrations(pool, { advisoryLock: false }), ['001_whatsapp_state.sql', '002_whatsapp_ai.sql', '003_handoff_timeout.sql', '004_marketing_campaigns.sql']);
   assert.deepEqual(await runMigrations(pool, { advisoryLock: false }), []);
 
   const store = new WhatsAppStore({ pool, identityKey: 'integration-test-key' });

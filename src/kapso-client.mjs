@@ -27,6 +27,24 @@ export class KapsoClient {
       payload: { type: 'document', document: { link: url.href, ...(caption ? { caption } : {}), filename } } });
   }
 
+  async listApprovedMarketingTemplates({ businessAccountId }) {
+    if (!this.apiKey || !/^\d{8,32}$/.test(String(businessAccountId || ''))) {
+      throw new Error('Kapso template access is not configured');
+    }
+    const url = new URL(`https://api.kapso.ai/meta/whatsapp/${this.apiVersion}/${businessAccountId}/message_templates`);
+    url.searchParams.set('status', 'APPROVED');
+    url.searchParams.set('category', 'MARKETING');
+    url.searchParams.set('limit', '100');
+    const response = await this.fetch(url, { headers: { 'X-API-Key': this.apiKey }, signal: AbortSignal.timeout(20_000) });
+    let body; try { body = await response.json(); } catch { body = {}; }
+    if (!response.ok || !Array.isArray(body.data)) {
+      const error = new Error('Kapso template sync failed');
+      error.status = response.status; error.code = body.error?.code ?? null;
+      throw error;
+    }
+    return body.data.filter((item) => item.status === 'APPROVED' && item.category === 'MARKETING');
+  }
+
   async sendPayload({ to, payload, customerMessageAt, now }) {
     if (!this.enabled || !this.apiKey || !this.phoneNumberId) throw new Error('Kapso outbound disabled');
     const recipient = String(to || '');

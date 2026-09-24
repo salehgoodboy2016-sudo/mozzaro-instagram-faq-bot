@@ -55,7 +55,8 @@ export function extractKapsoEvents(eventName, body, idempotencyKey = '') {
 
     if (eventName?.startsWith('whatsapp.message.') && baseId) {
       events.push({ kind: 'status', id: `kapso:status:${baseId}:${eventName}:${message.timestamp || ''}`,
-        status: eventName.slice('whatsapp.message.'.length) });
+        providerMessageId: String(baseId), status: eventName.slice('whatsapp.message.'.length),
+        at: timestamp(message.timestamp) });
     }
   }
   return events;

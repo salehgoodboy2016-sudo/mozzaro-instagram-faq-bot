@@ -17,6 +17,8 @@ import { KapsoClient } from './kapso-client.mjs';
 import { ClaudeClient } from './claude-client.mjs';
 import { MOZZARO_KNOWLEDGE } from './mozzaro-knowledge.mjs';
 import { extractKapsoEvents, verifyKapsoSignature } from './kapso-webhook.mjs';
+import { MarketingStore, DEFAULT_SAUDI_MARKETING_RATE_USD } from './marketing-store.mjs';
+import { campaignDashboardHtml, handleCampaignApi } from './campaign-dashboard.mjs';
 
 // Deployment providers inject secrets through process.env. Merge the local
 // .env file for development without ever requiring that file in production.
@@ -64,6 +66,7 @@ const config = {
   kapsoWebhookSecret: env.KAPSO_WEBHOOK_SECRET || '',
   kapsoApiKey: env.KAPSO_API_KEY || '',
   kapsoPhoneNumberId: env.KAPSO_PHONE_NUMBER_ID || '',
+  whatsappBusinessAccountId: env.WHATSAPP_BUSINESS_ACCOUNT_ID || '4133548783569339',
   kapsoApiVersion: env.KAPSO_WHATSAPP_API_VERSION || 'v24.0',
   kapsoMenuDocumentEnabled: env.KAPSO_MENU_DOCUMENT_ENABLED === 'true',
   kapsoMenuDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf',
@@ -85,6 +88,8 @@ const config = {
   claudeInputUsdPerMillion: Number(env.ANTHROPIC_INPUT_USD_PER_MILLION || 0),
   claudeOutputUsdPerMillion: Number(env.ANTHROPIC_OUTPUT_USD_PER_MILLION || 0),
   adminApiToken: env.MOZZARO_ADMIN_API_TOKEN || '',
+  whatsappMarketingRateUsd: Number(env.WHATSAPP_MARKETING_RATE_USD || DEFAULT_SAUDI_MARKETING_RATE_USD),
+  kapsoMonthlyMessageLimit: Number(env.KAPSO_MONTHLY_MESSAGE_LIMIT || 2000),
 };
 const store = new StateStore(config.stateFile, config.repeatCooldownMs);
 await store.load();
@@ -192,6 +197,8 @@ export function createWebhookServer(overrides = {}) {
   const handlerConfig = { ...config, ...overrides };
   const whatsappService = overrides.whatsappService || null;
   const kapsoService = overrides.kapsoService || null;
+  const marketingStore = overrides.marketingStore || null;
+  const campaignKapsoClient = overrides.campaignKapsoClient || null;
   const automationService = kapsoService || whatsappService;
   return createServer(async (req, res) => {
     try {
@@ -222,7 +229,23 @@ export function createWebhookServer(overrides = {}) {
         kapsoCateringDocumentEnabled: handlerConfig.kapsoCateringDocumentEnabled,
         claudeAiEnabled: handlerConfig.claudeAiEnabled === true && Boolean(handlerConfig.claudeApiKey && handlerConfig.claudeModel
           && handlerConfig.claudeMonthlyLimitUsd > 0 && handlerConfig.claudeInputUsdPerMillion > 0 && handlerConfig.claudeOutputUsdPerMillion > 0),
+        campaignDashboardReady: Boolean(marketingStore),
+        campaignSendingEnabled: false,
       })); return;
+    }
+    const campaignPath = new URL(req.url || '/', 'http://localhost').pathname;
+    if (req.method === 'GET' && campaignPath === '/admin/campaigns') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
+        'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' });
+      res.end(campaignDashboardHtml()); return;
+    }
+    if (campaignPath.startsWith('/admin/campaigns/api/')) {
+      const authorized = safeTokenEqual((req.headers.authorization || '').replace(/^Bearer /i, ''), handlerConfig.adminApiToken);
+      if (!authorized) { res.writeHead(401, { 'Cache-Control': 'no-store' }); res.end('Unauthorized'); return; }
+      await handleCampaignApi({ req, res, store: marketingStore, kapsoClient: campaignKapsoClient,
+        businessAccountId: handlerConfig.whatsappBusinessAccountId, planLimit: handlerConfig.kapsoMonthlyMessageLimit });
+      return;
     }
     if (new URL(req.url || '/', 'http://localhost').pathname.startsWith('/admin/whatsapp/')) {
       const authorized = safeTokenEqual((req.headers.authorization || '').replace(/^Bearer /i, ''), handlerConfig.adminApiToken);
@@ -325,6 +348,9 @@ export function createWebhookServer(overrides = {}) {
         };
       });
       console.log(JSON.stringify({ service: 'kapso-webhook', received: true, eventName, eventCount: events.length, messageCount, diagnostics }));
+      if (marketingStore) await marketingStore.recordKapsoEvents(events).catch(() => {
+        console.error(JSON.stringify({ service: 'marketing-reporting', outcome: 'event_record_failed' }));
+      });
       if (kapsoService) {
         try {
           const result = await kapsoService.processEvents(events);
@@ -428,6 +454,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     menuDocumentEnabled: config.kapsoMenuDocumentEnabled, menuDocumentUrl: config.kapsoMenuDocumentUrl,
     cateringDocumentEnabled: config.kapsoCateringDocumentEnabled, cateringDocumentUrl: config.kapsoCateringDocumentUrl,
     aiClient: claudeClient, aiMonthlyLimitUsd: config.claudeMonthlyLimitUsd, knowledge: CLAUDE_KNOWLEDGE });
+  const marketingStore = whatsappStore ? new MarketingStore({ pool: whatsappStore.pool,
+    rateUsd: config.whatsappMarketingRateUsd }) : null;
 
   // WHATSAPP_RESUME_SENDER is an explicit, one-time operator action. It is
   // accepted only when it is the sole allowlisted sender, and the database
@@ -443,7 +471,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     console.log(JSON.stringify({ service: 'whatsapp-handoff', oneTimeResume: outcome }));
   }
 
-  const server = createWebhookServer({ whatsappService, kapsoService });
+  const server = createWebhookServer({ whatsappService, kapsoService, marketingStore, campaignKapsoClient: kapsoClient });
   server.listen(config.port, () => {
     console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,
       instagramAutoReplyEnabled: config.enabled, whatsappAutomationEnabled: config.whatsappGlobalEnabled,
