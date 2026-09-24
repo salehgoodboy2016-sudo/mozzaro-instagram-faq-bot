@@ -72,6 +72,7 @@ const config = {
   kapsoCoexistenceVerified: env.KAPSO_COEXISTENCE_VERIFIED === 'true',
   kapsoEmployeeEchoVerified: env.KAPSO_EMPLOYEE_ECHO_VERIFIED === 'true',
   whatsappAutomationAllowlist: String(env.WHATSAPP_AUTOMATION_ALLOWLIST || '').split(',').map((value) => value.trim()).filter(Boolean),
+  whatsappResumeSender: env.WHATSAPP_RESUME_SENDER || '',
   kapsoEnabled: env.WHATSAPP_AUTOMATION_ENABLED === 'true'
     && env.KAPSO_AUTO_REPLY_ENABLED === 'true'
     && env.KAPSO_LIVE_SEND_APPROVED === 'true',
@@ -408,6 +409,20 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     menuDocumentEnabled: config.kapsoMenuDocumentEnabled, menuDocumentUrl: config.kapsoMenuDocumentUrl,
     cateringDocumentEnabled: config.kapsoCateringDocumentEnabled, cateringDocumentUrl: config.kapsoCateringDocumentUrl,
     aiClient: claudeClient, aiMonthlyLimitUsd: config.claudeMonthlyLimitUsd, knowledge: CLAUDE_KNOWLEDGE });
+
+  // WHATSAPP_RESUME_SENDER is an explicit, one-time operator action. It is
+  // accepted only when it is the sole allowlisted sender, and the database
+  // ledger prevents a later restart from clearing a new employee handoff.
+  const resumeSender = config.whatsappResumeSender.replace(/[()\s-]/g, '').replace(/^\+/, '');
+  const allowlist = config.whatsappAutomationAllowlist
+    .map((value) => value.replace(/[()\s-]/g, '').replace(/^\+/, ''));
+  if (resumeSender && whatsappStore) {
+    const outcome = allowlist.length === 1 && allowlist[0] === resumeSender && resumeSender === '966545383080'
+      ? (await whatsappStore.resumeConversationOnce(config.kapsoPhoneNumberId, resumeSender)).outcome
+      : 'allowlist_mismatch';
+    console.log(JSON.stringify({ service: 'whatsapp-handoff', oneTimeResume: outcome }));
+  }
+
   const server = createWebhookServer({ whatsappService, kapsoService });
   server.listen(config.port, () => {
     console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,

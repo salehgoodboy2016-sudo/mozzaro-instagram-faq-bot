@@ -45,6 +45,45 @@ export class WhatsAppStore {
       human_active=$2, handoff_reason=$3, updated_at=now()`, [id, active, reason]);
   }
 
+  // A Render environment flag may authorize one carefully scoped resume for
+  // the pilot conversation. The event ledger makes this operation one-shot
+  // across restarts and overlapping deployments.
+  async resumeConversationOnce(phoneId, sender) {
+    const conversationId = this.conversationId(phoneId, sender);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const existing = await client.query(
+        'SELECT human_active FROM whatsapp_conversations WHERE conversation_id=$1 FOR UPDATE',
+        [conversationId],
+      );
+      if (!existing.rowCount) {
+        await client.query('ROLLBACK');
+        return { outcome: 'not_found' };
+      }
+
+      const operationId = `operator_resume:${conversationId}`;
+      const inserted = await client.query(`INSERT INTO whatsapp_events
+        (event_id, conversation_id, event_type, outcome, event_at)
+        VALUES ($1,$2,'operator_resume','applied',now()) ON CONFLICT DO NOTHING RETURNING event_id`,
+      [operationId, conversationId]);
+      if (!inserted.rowCount) {
+        await client.query('COMMIT');
+        return { outcome: 'already_consumed' };
+      }
+
+      await client.query(`UPDATE whatsapp_conversations SET human_active=false,
+        handoff_reason=NULL, updated_at=now() WHERE conversation_id=$1`, [conversationId]);
+      await client.query('COMMIT');
+      return { outcome: 'resumed' };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async claimHumanHandoff(id, reason) {
     const result = await this.pool.query(`INSERT INTO whatsapp_conversations
       (conversation_id, human_active, handoff_reason) VALUES ($1,true,$2)
