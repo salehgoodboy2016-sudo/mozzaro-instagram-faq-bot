@@ -75,7 +75,7 @@ test('complaints and unknown questions require human attention and safe fallback
 test('menu names and SAR prices exactly match the supplied official PDF', () => {
   const expected = [
     ['pizza_margherita', 'pizza', 'مارجريتا', 'Margherita', 29],
-    ['pizza_mozzaro', 'pizza', 'بيتزا موزارو', 'Mozzaro Pizza', 34],
+    ['pizza_mozzaro', 'pizza', 'موزارو بيتزا', 'Mozzaro Pizza', 34],
     ['pizza_pepperoni', 'pizza', 'بيبروني', 'Pepperoni', 32],
     ['pizza_pesto', 'pizza', 'بيستو', 'Pesto', 33],
     ['pizza_rocotto', 'pizza', 'روكوتو', 'Rocotto', 32],
@@ -98,7 +98,7 @@ test('menu names and SAR prices exactly match the supplied official PDF', () => 
     ['focaccia_salami_bacon', 'focaccia_sandwiches', 'سلامي وبيكن', 'Salami & Bacon', 26],
     ['focaccia_burrata', 'focaccia_sandwiches', 'بوراتا', 'Burrata', 28],
     ['focaccia_bread_garlic_butter', 'focaccia_bread', 'فوكاتشا بالثوم والزبدة', 'Garlic Butter Focaccia', 13],
-    ['focaccia_bread_plain', 'focaccia_bread', 'خبزة فوكاتشا', 'Focaccia Bread', 7],
+    ['focaccia_bread_plain', 'focaccia_bread', 'خبزة الفوكاتشا', 'Focaccia Bread', 7],
     ['focaccia_bread_vegetable', 'focaccia_bread', 'فوكاتشا بالخضار', 'Vegetable Focaccia', 12],
     ['drink_lavender_limoncello', 'drinks', 'ليمونتشيلو لافندر', 'Lavender Limoncello', 15],
     ['sauce_pesto_tomato', 'sauces', 'صلصة الطماطم بالبيستو', 'Pesto Tomato Sauce', 4],
@@ -120,7 +120,7 @@ test('menu FAQ understands Arabic and English item names, categories, and routes
   assert.equal(planWhatsAppReply('وش أسعار المنيو كامل؟').type, 'document');
   assert.equal(planWhatsAppReply('كم سعر تيركي بيستو؟').reply, 'تيركي بيستو: 24 ريال.');
   assert.match(planWhatsAppReply('وش عندكم فوكاتشا؟').reply, /تيركي بيستو 24 ريال/);
-  assert.match(planWhatsAppReply('كم أسعار خبز الفوكاتشا؟').reply, /خبزة فوكاتشا 7 ريال/);
+  assert.match(planWhatsAppReply('كم أسعار خبز الفوكاتشا؟').reply, /خبزة الفوكاتشا 7 ريال/);
   assert.equal(planWhatsAppReply('كم سعر بوراتا؟').requiresHuman, true);
   for (const question of ['كم سعر تيركي بيستو؟', 'وش عندكم فوكاتشا؟', 'كم أسعار خبز الفوكاتشا؟', 'كم باقة 20 شخص؟']) {
     assert.doesNotMatch(planWhatsAppReply(question).reply, /[A-Za-z]/);

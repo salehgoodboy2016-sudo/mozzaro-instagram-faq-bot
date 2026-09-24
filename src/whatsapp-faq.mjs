@@ -54,7 +54,7 @@ const MENU_ALIASES = Object.freeze({
   focaccia_salami_bacon: ['سلامي وبيكن', 'سلامي بيكن', 'salami bacon'],
   focaccia_burrata: ['فوكاتشا بوراتا', 'ساندويتش بوراتا', 'focaccia burrata'],
   focaccia_bread_garlic_butter: ['فوكاتشا بالثوم والزبدة', 'فوكاتشا ثوم وزبدة', 'garlic butter focaccia'],
-  focaccia_bread_plain: ['خبزة فوكاتشا', 'خبز فوكاتشا', 'focaccia bread'],
+  focaccia_bread_plain: ['خبزة الفوكاتشا', 'خبزة فوكاتشا', 'خبز فوكاتشا', 'focaccia bread'],
   focaccia_bread_vegetable: ['فوكاتشا بالخضار', 'فوكاتشا خضار', 'vegetable focaccia'],
   drink_lavender_limoncello: ['ليمونتشيلو لافندر', 'لافندر ليمونتشيلو', 'lavender limoncello'],
   sauce_pesto_tomato: ['صلصة الطماطم بالبيستو', 'صوص طماطم بيستو', 'pesto tomato sauce'],

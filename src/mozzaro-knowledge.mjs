@@ -14,7 +14,7 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
   menuSource: 'البيتزا (10).pdf',
   menuItems: [
     { id: 'pizza_margherita', category: 'pizza', nameAr: 'مارجريتا', nameEn: 'Margherita', priceSar: 29 },
-    { id: 'pizza_mozzaro', category: 'pizza', nameAr: 'بيتزا موزارو', nameEn: 'Mozzaro Pizza', priceSar: 34 },
+    { id: 'pizza_mozzaro', category: 'pizza', nameAr: 'موزارو بيتزا', nameEn: 'Mozzaro Pizza', priceSar: 34 },
     { id: 'pizza_pepperoni', category: 'pizza', nameAr: 'بيبروني', nameEn: 'Pepperoni', priceSar: 32 },
     { id: 'pizza_pesto', category: 'pizza', nameAr: 'بيستو', nameEn: 'Pesto', priceSar: 33 },
     { id: 'pizza_rocotto', category: 'pizza', nameAr: 'روكوتو', nameEn: 'Rocotto', priceSar: 32 },
@@ -37,7 +37,7 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
     { id: 'focaccia_salami_bacon', category: 'focaccia_sandwiches', nameAr: 'سلامي وبيكن', nameEn: 'Salami & Bacon', priceSar: 26 },
     { id: 'focaccia_burrata', category: 'focaccia_sandwiches', nameAr: 'بوراتا', nameEn: 'Burrata', priceSar: 28 },
     { id: 'focaccia_bread_garlic_butter', category: 'focaccia_bread', nameAr: 'فوكاتشا بالثوم والزبدة', nameEn: 'Garlic Butter Focaccia', priceSar: 13 },
-    { id: 'focaccia_bread_plain', category: 'focaccia_bread', nameAr: 'خبزة فوكاتشا', nameEn: 'Focaccia Bread', priceSar: 7 },
+    { id: 'focaccia_bread_plain', category: 'focaccia_bread', nameAr: 'خبزة الفوكاتشا', nameEn: 'Focaccia Bread', priceSar: 7 },
     { id: 'focaccia_bread_vegetable', category: 'focaccia_bread', nameAr: 'فوكاتشا بالخضار', nameEn: 'Vegetable Focaccia', priceSar: 12 },
     { id: 'drink_lavender_limoncello', category: 'drinks', nameAr: 'ليمونتشيلو لافندر', nameEn: 'Lavender Limoncello', priceSar: 15 },
     { id: 'sauce_pesto_tomato', category: 'sauces', nameAr: 'صلصة الطماطم بالبيستو', nameEn: 'Pesto Tomato Sauce', priceSar: 4 },
