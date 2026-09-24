@@ -89,7 +89,9 @@ test('ordering and delivery use approved Arabic wording and do not claim direct 
   assert.equal(planWhatsAppReply('Do you deliver?').reply, delivery);
   assert.equal(renderApprovedTopics(['delivery']).reply, delivery);
   assert.equal(planWhatsAppReply('كيف أطلب؟').reply, ordering);
-  assert.equal(planWhatsAppReply('وش رقم الطلبات؟').reply, 'رقم الطلبات والكيترنق: 0565017314.');
+  assert.equal(planWhatsAppReply('وش رقم الطلبات؟').reply, 'رقم موزارو: 0565017314');
+  assert.equal(planWhatsAppReply('ممكن الرقم').reply, 'رقم موزارو: 0565017314');
+  assert.equal(planWhatsAppReply('ابي رقم الاتصال').reply, 'رقم موزارو: 0565017314');
   for (const reply of [delivery, ordering, planWhatsAppReply('وش رقم الطلبات؟').reply]) {
     assert.doesNotMatch(reply, /\b(?:Keeta|HungerStation|drive.thru)\b|direct delivery|رسوم|دقيقة|حد أدنى/i);
     assert.doesNotMatch(reply, /[A-Za-z]/);
@@ -471,6 +473,48 @@ test('persistent event IDs suppress retries and automation defaults off', async 
   assert.deepEqual((await service.process(sample('متى تفتحون؟', 'first', '1790190000'))).outcomes, { automation_disabled: 1 });
   assert.deepEqual((await service.process(sample('متى تفتحون؟', 'first', '1790190000'))).outcomes, { duplicate: 1 });
   assert.equal(client.sent.length, 0);
+});
+
+test('disabled legacy observer cannot activate handoff before Kapso handles an inbound message', async () => {
+  const store = new MemoryStore();
+  const conversationId = store.conversationId(phoneId, '966545383080');
+  const observer = new WhatsAppService({ store, phoneNumberId: phoneId, now: () => now });
+  const inbound = { kind: 'incoming', id: 'meta-observer-phone', phoneId, sender: '966545383080',
+    at: new Date('2026-09-23T18:59:00Z'), text: 'ممكن الرقم', type: 'text' };
+  assert.equal(await observer.processEvent(inbound), 'automation_disabled');
+  assert.notEqual((await store.getConversation(conversationId))?.human_active, true);
+  assert.equal((await store.getConversation(conversationId))?.latest_customer_at, undefined);
+
+  const client = new MockWhatsAppClient();
+  const kapso = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowlist: ['966545383080'], now: () => now });
+  assert.equal(await kapso.processEvent({ ...inbound, id: 'kapso-phone-request' }), 'sent');
+  assert.equal(client.sent[0].text, 'رقم موزارو: 0565017314');
+  assert.notEqual((await store.getConversation(conversationId)).human_active, true);
+});
+
+test('rapid consecutive WhatsApp messages are each processed once without false handoff', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowlist: ['966545383080'], now: () => now });
+  const messages = [
+    ['كيف اقدر اطلب', 'rapid-1', '1790189940'],
+    ['ممكن الرقم', 'rapid-2', '1790189941'],
+    ['كيف اقدر اطلب', 'rapid-3', '1790189942'],
+    ['السلام عليكم', 'rapid-4', '1790189943'],
+  ];
+  const events = messages.map(([text, id, timestamp]) => ({ kind: 'incoming', id, phoneId,
+    sender: '966545383080', at: new Date(Number(timestamp) * 1000), text, type: 'text' }));
+  assert.deepEqual((await service.processEvents(events)).outcomes, { sent: 4 });
+  assert.deepEqual(client.sent.map((message) => message.text), [
+    'تقدر تطلب من الدرايف ثرو أو بالاتصال علينا، والتوصيل متوفر عن طريق كيتا وهنقرستيشن.',
+    'رقم موزارو: 0565017314',
+    'تقدر تطلب من الدرايف ثرو أو بالاتصال علينا، والتوصيل متوفر عن طريق كيتا وهنقرستيشن.',
+    'وعليكم السلام ورحمة الله وبركاته',
+  ]);
+  assert.notEqual((await store.getConversation(store.conversationId(phoneId, '966545383080'))).human_active, true);
+  assert.deepEqual((await service.processEvents(events)).outcomes, { duplicate: 4 });
+  assert.equal(client.sent.length, 4);
 });
 
 test('enabled automation requires and enforces a strict test allowlist', async () => {

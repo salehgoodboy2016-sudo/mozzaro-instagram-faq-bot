@@ -100,6 +100,13 @@ export class WhatsAppService {
     const conversationId = this.store.conversationId(event.phoneId, event.sender);
     const inserted = await this.store.recordEvent({ id: event.id, conversationId, type: 'incoming', at: event.at });
     if (!inserted) return 'duplicate';
+    // The legacy Meta webhook is retained as a disabled observer while Kapso
+    // handles customer automation. It must not mutate conversation activity or
+    // claim handoff for inbound messages; employee echoes above remain active.
+    if (!this.enabled) {
+      await this.store.setOutcome(event.id, 'automation_disabled');
+      return 'automation_disabled';
+    }
     if (this.enabled && !this.allowAll && !this.allowlist.has(normalizeIdentity(event.sender))) {
       await this.store.setOutcome(event.id, 'allowlist_blocked');
       return 'allowlist_blocked';

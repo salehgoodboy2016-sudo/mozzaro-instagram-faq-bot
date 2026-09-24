@@ -13,7 +13,7 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
   cateringText: 'لتفاصيل وحجوزات الكيترنق تواصلوا على 0565017314 (+966565017314).',
   ordersText: 'للطلبات، اتصلوا على الرقم التالي ويرد عليكم الكاشير: 0565017314',
   whatsappOrdersText: 'تقدر تطلب من الدرايف ثرو أو بالاتصال علينا، والتوصيل متوفر عن طريق كيتا وهنقرستيشن.',
-  whatsappOrdersContactText: 'رقم الطلبات والكيترنق: 0565017314.',
+  whatsappOrdersContactText: 'رقم موزارو: 0565017314',
   orderChannels: Object.freeze(['drive_thru', 'phone', 'keeta', 'hungerstation']),
   whatsappDeliveryText: 'التوصيل متوفر داخل الأحساء عن طريق تطبيقَي كيتا وهنقرستيشن، حسب نطاق التغطية في التطبيق.',
   deliveryRules: Object.freeze({ directRestaurantDelivery: false, coverageMustBeCheckedInApp: true,

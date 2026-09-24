@@ -282,7 +282,7 @@ export function planWhatsAppReply(rawText, now = new Date()) {
   }
 
   const greeting = islamicGreeting ? 'وعليكم السلام ورحمة الله وبركاته' : casualGreeting ? 'أهلين' : null;
-  const asksOrderPhone = includes(text, ['رقم الطلب', 'رقم التواصل', 'رقمكم', 'رقم الهاتف', 'وش رقم', 'رقم جوال', 'phone number', 'contact number']);
+  const asksOrderPhone = includes(text, ['ممكن الرقم', 'ممكن رقم', 'ابي الرقم', 'أبي الرقم', 'رقم الاتصال', 'رقم موزارو', 'رقم الطلب', 'رقم التواصل', 'رقمكم', 'رقم الهاتف', 'وش رقم', 'رقم جوال', 'phone number', 'contact number']);
   if (asksOrderPhone) return { reply: ANSWERS.orders_contact, topics: ['orders_contact'], requiresHuman: false };
   if (includes(text, ['توصيل', 'يوصل', 'توصلون', 'توصيل الطلب', 'delivery', 'deliver'])) {
     return { reply: `${greeting ? `${greeting}، ` : ''}${ANSWERS.delivery}`, topics: ['delivery'], requiresHuman: false };
