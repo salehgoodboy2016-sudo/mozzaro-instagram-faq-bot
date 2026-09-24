@@ -8,12 +8,30 @@ export class KapsoClient {
   }
 
   async sendText({ to, text, customerMessageAt, now = new Date() }) {
+    if (!text || text.length > 4096) throw new Error('Invalid WhatsApp text');
+    return this.sendPayload({ to, customerMessageAt, now,
+      payload: { type: 'text', text: { preview_url: false, body: text } } });
+  }
+
+  async sendDocument({ to, link, caption, filename, customerMessageAt, now = new Date() }) {
+    let url;
+    try { url = new URL(link); } catch { throw new Error('Invalid WhatsApp document URL'); }
+    if (url.protocol !== 'https:' || url.username || url.password || !url.hostname || url.search || url.hash) {
+      throw new Error('Invalid WhatsApp document URL');
+    }
+    if (!caption || caption.length > 1024 || filename !== 'منيو موزارو.pdf') {
+      throw new Error('Invalid WhatsApp document');
+    }
+    return this.sendPayload({ to, customerMessageAt, now,
+      payload: { type: 'document', document: { link: url.href, caption, filename } } });
+  }
+
+  async sendPayload({ to, payload, customerMessageAt, now }) {
     if (!this.enabled || !this.apiKey || !this.phoneNumberId) throw new Error('Kapso outbound disabled');
     const recipient = String(to || '');
     if (!/^\d{8,15}$/.test(recipient) && !/^[A-Za-z0-9._:-]{8,128}$/.test(recipient)) {
       throw new Error('Invalid WhatsApp recipient');
     }
-    if (!text || text.length > 4096) throw new Error('Invalid WhatsApp text');
     const age = now.getTime() - new Date(customerMessageAt).getTime();
     if (!Number.isFinite(age) || age < 0 || age >= 24 * 60 * 60 * 1000) {
       throw new Error('Outside customer service window');
@@ -27,7 +45,7 @@ export class KapsoClient {
         headers: { 'X-API-Key': this.apiKey, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messaging_product: 'whatsapp', recipient_type: 'individual', ...target,
-          type: 'text', text: { preview_url: false, body: text },
+          ...payload,
         }),
         signal: AbortSignal.timeout(20_000),
       },

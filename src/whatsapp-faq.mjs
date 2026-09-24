@@ -20,10 +20,14 @@ const CATERING_PACKAGE_ALIASES = Object.freeze({
   signature: ['signature', 'سيغنتشر', 'سيجنشر', 'باقة سيغنتشر'],
   event: ['event', 'ايفنت', 'إيفنت', 'باقة ايفنت'],
 });
+const CATERING_PACKAGE_NAMES_AR = Object.freeze({
+  basic: 'بيسك', standard: 'ستاندرد', premium: 'بريميوم', signature: 'سيغنتشر', event: 'إيفنت',
+});
 
 const MENU_GROUPS = Object.freeze({
   menu_pizza: 'pizza', menu_pasta: 'pasta', menu_appetizers: 'appetizers',
   menu_sauces: 'sauces', menu_drinks: 'drinks',
+  menu_focaccia_sandwiches: 'focaccia_sandwiches', menu_focaccia_bread: 'focaccia_bread',
 });
 const MENU_ALIASES = Object.freeze({
   pizza_margherita: ['مارجريتا', 'مارغريتا', 'margherita'],
@@ -43,6 +47,19 @@ const MENU_ALIASES = Object.freeze({
   sauce_spicy_olive_oil: ['زيت زيتون حار', 'spicy olive oil'],
   sauce_truffle_oil: ['زيت الترفل', 'truffle oil'],
   drink_soft_drinks: ['مشروبات غازية', 'مشروب غازي', 'soft drinks'],
+  focaccia_turkey_pesto: ['تيركي بيستو', 'تركي بيستو', 'turkey pesto'],
+  focaccia_crunchy_chicken: ['كرانشي دجاج', 'كرانشي تشيكن', 'crunchy chicken'],
+  focaccia_halloumi_pesto: ['حلومي بيستو', 'halloumi pesto'],
+  focaccia_spicy_tuna: ['سبايسي تونة', 'سبايسي تونا', 'spicy tuna'],
+  focaccia_salami_bacon: ['سلامي وبيكن', 'سلامي بيكن', 'salami bacon'],
+  focaccia_burrata: ['فوكاتشا بوراتا', 'ساندويتش بوراتا', 'focaccia burrata'],
+  focaccia_bread_garlic_butter: ['فوكاتشا بالثوم والزبدة', 'فوكاتشا ثوم وزبدة', 'garlic butter focaccia'],
+  focaccia_bread_plain: ['خبزة فوكاتشا', 'خبز فوكاتشا', 'focaccia bread'],
+  focaccia_bread_vegetable: ['فوكاتشا بالخضار', 'فوكاتشا خضار', 'vegetable focaccia'],
+  drink_lavender_limoncello: ['ليمونتشيلو لافندر', 'لافندر ليمونتشيلو', 'lavender limoncello'],
+  sauce_pesto_tomato: ['صلصة الطماطم بالبيستو', 'صوص طماطم بيستو', 'pesto tomato sauce'],
+  sauce_pesto: ['صوص البيستو', 'صوص بيستو', 'pesto sauce'],
+  sauce_mustard_mayo: ['صوص مايو بالخردل', 'مايو خردل', 'mustard mayo sauce'],
 });
 
 const includes = (text, terms) => terms.some((term) => text.includes(normalizeArabic(term)));
@@ -51,10 +68,15 @@ function menuTopicsFor(text) {
   const topics = [];
   const pastaAsked = includes(text, ['باستا', 'مكرونه', 'pasta', 'rigatoni', 'casarecce']);
   const pizzaAsked = includes(text, ['بيتزا', 'pizza']);
+  const focacciaAsked = includes(text, ['فوكاتشا', 'فوكاشا', 'focaccia']);
+  const sauceAsked = includes(text, ['صوص', 'صلصة', 'sauce']);
   const itemMatches = Object.entries(MENU_ALIASES).filter(([, aliases]) => includes(text, aliases));
+  const specificFocaccia = itemMatches.some(([id]) => id.startsWith('focaccia_'));
   for (const [id] of itemMatches) {
     if (id === 'pizza_pesto' && pastaAsked && !pizzaAsked) continue;
     if (id === 'pasta_pesto_casarecce' && pizzaAsked && !pastaAsked) continue;
+    if (['pizza_pesto', 'pasta_pesto_casarecce'].includes(id) && (focacciaAsked || specificFocaccia || sauceAsked)) continue;
+    if (id === 'pizza_burrata' && focacciaAsked && !pizzaAsked) continue;
     topics.push(`menu_${id}`);
   }
   if (topics.length) return [...new Set(topics)];
@@ -62,9 +84,10 @@ function menuTopicsFor(text) {
   const groups = [];
   if (pizzaAsked) groups.push('menu_pizza');
   if (pastaAsked) groups.push('menu_pasta');
+  if (focacciaAsked) groups.push(includes(text, ['خبز', 'خبزة', 'bread']) ? 'menu_focaccia_bread' : 'menu_focaccia_sandwiches');
   if (includes(text, ['مقبلات', 'اطباق جانبيه', 'appetizers', 'appetizer'])) groups.push('menu_appetizers');
   if (includes(text, ['صوص', 'صوصات', 'sauce', 'sauces'])) groups.push('menu_sauces');
-  if (includes(text, ['مشروبات', 'مشروب', 'drinks', 'drink'])) groups.push('menu_drinks');
+  if (includes(text, ['مشروبات', 'مشروب', 'عصير', 'drinks', 'drink'])) groups.push('menu_drinks');
   if (groups.length) return groups;
   if (includes(text, ['المنيو', 'القائمه', 'الاسعار', 'الأسعار', 'منيو', 'menu'])) return ['menu_all'];
   return [];
@@ -77,12 +100,10 @@ function renderMenuTopic(topic) {
   const item = items.find(({ id: itemId }) => itemId === id);
   if (item) {
     if (item.priceSar == null) return null;
-    return `${item.nameAr} (${item.nameEn}): ${item.priceSar} ريال.`;
+    return `${item.nameAr}: ${item.priceSar} ريال.`;
   }
   if (topic === 'menu_all') {
-    const priced = items.filter(({ priceSar }) => priceSar != null).map(formatMenuItem);
-    priced.push('بيتزا الشهر: السعر الحالي يحدده الموظفون.');
-    return `أسعار القائمة بالريال: ${priced.join('، ')}.`;
+    return null;
   }
   const category = MENU_GROUPS[topic];
   if (!category) return null;
@@ -90,17 +111,19 @@ function renderMenuTopic(topic) {
   if (!groupItems.length) return null;
   const prices = groupItems.filter(({ priceSar }) => priceSar != null).map(formatMenuItem);
   if (category === 'pizza') prices.push('بيتزا الشهر: السعر الحالي يحدده الموظفون');
-  return `أسعار ${category === 'pizza' ? 'البيتزا' : category === 'pasta' ? 'الباستا' : category === 'appetizers' ? 'المقبلات' : category === 'sauces' ? 'الصوصات' : 'المشروبات'} بالريال: ${prices.join('، ')}.`;
+  const title = { pizza: 'البيتزا', pasta: 'الباستا', appetizers: 'المقبلات', sauces: 'الصوصات',
+    drinks: 'المشروبات', focaccia_sandwiches: 'ساندويتشات الفوكاتشا', focaccia_bread: 'خبز الفوكاتشا' }[category];
+  return `أسعار ${title}: ${prices.join('، ')}.`;
 }
 
 function formatMenuItem(item) {
-  return `${item.nameAr} (${item.nameEn}) ${item.priceSar} ريال`;
+  return `${item.nameAr} ${item.priceSar} ريال`;
 }
 
 function isMenuAvailabilityQuestion(text, topics) {
   const explicit = includes(text, ['متوفر', 'متوفره', 'موجود', 'available', 'availability', 'مكونات', 'مكوناته', 'حساسيه', 'allergen', 'ingredients']);
   const asksWhetherStocked = includes(text, ['عندكم'])
-    && topics.some((topic) => !['menu_pizza', 'menu_pasta', 'menu_appetizers', 'menu_sauces', 'menu_drinks', 'menu_all'].includes(topic));
+    && topics.some((topic) => !Object.hasOwn(MENU_GROUPS, topic) && topic !== 'menu_all');
   return explicit || asksWhetherStocked;
 }
 
@@ -119,30 +142,30 @@ function renderCateringPackage(packageId) {
   const pack = MOZZARO_KNOWLEDGE.cateringPackages.find(({ id }) => id === packageId);
   if (!pack) return null;
   const guests = pack.guestMin == null ? `حتى ${pack.guestMax} ضيف` : `${pack.guestMin}–${pack.guestMax} ضيف`;
-  const workers = pack.staffCount === 1 ? 'رجل واحد من الطاقم' : `${pack.staffCount} رجال من الطاقم`;
+  const workers = pack.staffCount === 2 ? 'رجلين من الطاقم' : 'ثلاثة رجال من الطاقم';
   const inclusions = pack.inclusions.map((item) => CATERING_INCLUSION_TEXT[item]).filter(Boolean).join('، ');
-  return `باقة ${pack.name} مناسبة لـ${guests}: ${pack.totalItems} صنف إجمالي، وحتى ${pack.burrataMax} بيتزا بوراتا اختيارية ضمن الإجمالي (تقدر تستبدلها ببيتزا عادية أو باستا). تبدأ من ${pack.startingPriceSar} ريال، ومدة الخدمة حتى ${pack.serviceHoursMax} ساعات، والطاقم ${workers}. تشمل ${inclusions}.`;
+  return `باقة ${CATERING_PACKAGE_NAMES_AR[pack.id]} مناسبة لـ${guests}: ${pack.totalItems} صنف إجمالي، وحتى ${pack.burrataMax} بيتزا بوراتا اختيارية ضمن الإجمالي (تقدر تستبدلها ببيتزا عادية أو باستا). تبدأ من ${pack.startingPriceSar} ريال، والخدمة حتى ${pack.serviceHoursMax} ساعات، ويجي معها ${workers}. تشمل ${inclusions}.`;
 }
 
 function renderCateringTopic(topic) {
   if (topic.startsWith('catering_addon_')) {
     const addonId = topic.slice('catering_addon_'.length);
     const addon = MOZZARO_KNOWLEDGE.cateringAddons.find(({ id }) => id === addonId);
-    return addon?.priceSar == null ? null : `${addon.nameAr} (${addon.nameEn}) سعرها ${addon.priceSar} ريال.`;
+    return addon?.priceSar == null ? null : `${addon.nameAr} سعرها ${addon.priceSar} ريال.`;
   }
   if (topic.startsWith('catering_') && MOZZARO_KNOWLEDGE.cateringPackages.some(({ id }) => topic === `catering_${id}`)) {
     return renderCateringPackage(topic.slice('catering_'.length));
   }
   if (topic === 'catering_packages') {
     const lines = MOZZARO_KNOWLEDGE.cateringPackages.map((pack) =>
-      `${pack.name}: ${pack.guestMin == null ? `حتى ${pack.guestMax}` : `${pack.guestMin}–${pack.guestMax}`} ضيف، ${pack.totalItems} صنف إجمالي (حتى ${pack.burrataMax} بوراتا اختيارية ضمنها)، تبدأ من ${pack.startingPriceSar} ريال`);
+      `${CATERING_PACKAGE_NAMES_AR[pack.id]}: ${pack.guestMin == null ? `حتى ${pack.guestMax}` : `${pack.guestMin}–${pack.guestMax}`} ضيف، ${pack.totalItems} صنف إجمالي (حتى ${pack.burrataMax} بوراتا اختيارية ضمنها)، تبدأ من ${pack.startingPriceSar} ريال`);
     return `باقات الكيترنق وأسعارها الابتدائية: ${lines.join('؛ ')}. السعر النهائي والتوفر يؤكدهما الفريق.`;
   }
   if (topic === 'catering_types') return 'تقدر تختار بيتزا فقط، أو باستا فقط، أو تخلط بيتزا وباستا ضمن إجمالي عدد أصناف الباقة. الباستا لها نفس باقات البيتزا وأسعارها الابتدائية، وما لها تسعيرة باقات منفصلة.';
   if (topic === 'catering_burrata') return 'البوراتا اختيارية وليست إجبارية، وكمّيتها ضمن إجمالي عدد أصناف الباقة وليست زيادة عليه. تقدر تستبدل أي أو كل الكمية المخصصة ببيتزا عادية أو باستا، ويبقى إجمالي العدد ثابتًا.';
-  if (topic === 'catering_staff') return `${MOZZARO_KNOWLEDGE.cateringStaffGenderText} عدد الطاقم حسب الباقة: Basic وStandard رجلان، وPremium وSignature وEvent ثلاثة رجال.`;
-  if (topic === 'catering_hours') return 'مدة الخدمة القصوى حسب الباقة: Basic حتى 3 ساعات، Standard وPremium حتى 4 ساعات، Signature حتى 6 ساعات، وEvent حتى 8 ساعات.';
-  if (topic === 'catering_inclusions') return 'تشمل الباقات بوث التقديم، وتجهيزًا قبل الموعد، ونقل البوث داخل المدينة، وصوصات تقديم ومشروبات غازية. Basic وStandard تشملان بوكسات؛ Premium وSignature وEvent تشمل بوكسات وصحون؛ وSignature وEvent تشملان أيضًا ضيافة تيراميسو وقهوة.';
+  if (topic === 'catering_staff') return `${MOZZARO_KNOWLEDGE.cateringStaffGenderText} عدد الطاقم حسب الباقة: بيسك وستاندرد رجلان، وبريميوم وسيغنتشر وإيفنت ثلاثة رجال.`;
+  if (topic === 'catering_hours') return 'مدة الخدمة القصوى حسب الباقة: بيسك حتى 3 ساعات، وستاندرد وبريميوم حتى 4 ساعات، وسيغنتشر حتى 6 ساعات، وإيفنت حتى 8 ساعات.';
+  if (topic === 'catering_inclusions') return 'تشمل الباقات بوث التقديم، وتجهيزًا قبل الموعد، ونقل البوث داخل المدينة، وصوصات تقديم ومشروبات غازية. بيسك وستاندرد تشملان بوكسات؛ وبريميوم وسيغنتشر وإيفنت تشمل بوكسات وصحون؛ وسيغنتشر وإيفنت تشملان أيضًا ضيافة تيراميسو وقهوة.';
   if (topic === 'catering_addons') {
     const listed = MOZZARO_KNOWLEDGE.cateringAddons.map((addon) => addon.priceSar == null
       ? `${addon.nameAr}: ${addon.priceRule === 'based_on_distance' ? 'حسب المسافة' : 'حسب الطلب'}`
@@ -221,7 +244,7 @@ export function planWhatsAppReply(rawText, now = new Date()) {
   const casualGreeting = !islamicGreeting && includes(text, ['هلا', 'اهلا', 'أهلا', 'مرحبا', 'يا هلا']);
   const complaint = includes(text, [
     'شكوى', 'اشتك', 'زعلان', 'سيء', 'سيئ', 'غلط', 'خطا', 'تأخر', 'تاخير', 'متاخر',
-    'ناقص', 'مفقود', 'ما وصل', 'ماجاني', 'طلب غلط', 'استرجاع', 'تعويض', 'refund',
+    'ناقص', 'مفقود', 'ما وصل', 'ماجاني', 'طلب غلط', 'استرجاع', 'تعويض', 'اقتراح', 'أقترح', 'اقترح', 'مقترح', 'فكرة', 'ملاحظة', 'refund', 'suggestion', 'feedback',
     'complaint', 'wrong order', 'missing item', 'late delivery', 'حساسيه', 'حساس',
   ]);
   if (complaint) return { reply: null, topics: [], requiresHuman: true, reason: 'complaint' };
@@ -239,6 +262,11 @@ export function planWhatsAppReply(rawText, now = new Date()) {
   if (cateringTopics.length) topics.push(...cateringTopics);
   else if (cateringContext) return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
   const menuTopics = cateringContext ? [] : menuTopicsFor(text);
+  if (menuTopics.includes('menu_pizza_burrata') && !includes(text,
+    ['بيتزا', 'فوكاتشا', 'ساندويتش', 'ساندوتش', 'pizza', 'focaccia', 'sandwich'])) {
+    return { reply: 'تقصد بيتزا البوراتا أو ساندويتش الفوكاتشا بالبوراتا؟ بنحوّل استفسارك للفريق يساعدك.',
+      topics: [], requiresHuman: true, reason: 'unknown_question', ambiguity: true };
+  }
   if (menuTopics.length && isMenuAvailabilityQuestion(text, menuTopics)) {
     return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
   }
@@ -247,6 +275,10 @@ export function planWhatsAppReply(rawText, now = new Date()) {
       return { reply: 'بيتزا الشهر ما لها سعر ثابت بالقائمة. بنحوّل استفسارك للفريق لمعرفة التفاصيل الحالية.',
         topics: [], requiresHuman: true, reason: 'unknown_question' };
     }
+  }
+  if (menuTopics.includes('menu_all')) {
+    return { reply: 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.',
+      type: 'document', topics: ['menu_all'], requiresHuman: false };
   }
   if (menuTopics.length) topics.push(...menuTopics);
   if (includes(text, ['دجاج', 'لحم', 'لحوم', 'مصدر', 'مورد', 'chicken', 'meat'])
@@ -287,13 +319,17 @@ export function planWhatsAppReply(rawText, now = new Date()) {
 
 export function renderApprovedTopics(topics, now = new Date()) {
   const allowed = new Set(['suppliers', 'hours', 'catering', 'orders', 'menu_pizza', 'menu_pasta',
-    'menu_appetizers', 'menu_sauces', 'menu_drinks', 'menu_all',
+    'menu_appetizers', 'menu_sauces', 'menu_drinks', 'menu_focaccia_sandwiches', 'menu_focaccia_bread', 'menu_all',
     'catering_packages', 'catering_types', 'catering_burrata', 'catering_staff', 'catering_addons',
     'catering_hours', 'catering_inclusions', 'catering_contact',
     ...MOZZARO_KNOWLEDGE.menuItems.map(({ id }) => `menu_${id}`)]);
   for (const pack of MOZZARO_KNOWLEDGE.cateringPackages) allowed.add(`catering_${pack.id}`);
   for (const addon of MOZZARO_KNOWLEDGE.cateringAddons) allowed.add(`catering_addon_${addon.id}`);
   if (!Array.isArray(topics) || !topics.length || topics.some((topic) => !allowed.has(topic))) return null;
+  if (topics.includes('menu_all')) {
+    return { reply: 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.',
+      type: 'document', topics: ['menu_all'], requiresHuman: false };
+  }
   const parts = [];
   for (const topic of [...new Set(topics)]) {
     if (topic.startsWith('catering_')) {

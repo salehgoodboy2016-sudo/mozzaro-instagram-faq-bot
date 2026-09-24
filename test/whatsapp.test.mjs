@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { planWhatsAppReply, isOpenInRiyadh, renderApprovedTopics } from '../src/whatsapp-faq.mjs';
 import { WhatsAppClient, MockWhatsAppClient } from '../src/whatsapp-client.mjs';
 import { WhatsAppService, extractWhatsAppEvents } from '../src/whatsapp-service.mjs';
@@ -78,12 +78,12 @@ test('menu names and SAR prices exactly match the supplied official PDF', () => 
     ['pizza_mozzaro', 'pizza', 'بيتزا موزارو', 'Mozzaro Pizza', 34],
     ['pizza_pepperoni', 'pizza', 'بيبروني', 'Pepperoni', 32],
     ['pizza_pesto', 'pizza', 'بيستو', 'Pesto', 33],
-    ['pizza_rocotto', 'pizza', 'ريكوتا', 'Rocotto', 32],
+    ['pizza_rocotto', 'pizza', 'روكوتو', 'Rocotto', 32],
     ['pizza_burrata', 'pizza', 'بوراتا', 'Burrata', 43],
     ['pizza_month', 'pizza', 'بيتزا الشهر', 'Pizza of the Month', null],
-    ['pasta_pink_rigatoni', 'pasta', 'بينك ريغاتوني', 'Pink Rigatoni', 32],
-    ['pasta_truffle_rigatoni', 'pasta', 'ترافل ريغاتوني', 'Truffle Rigatoni', 34],
-    ['pasta_pesto_casarecce', 'pasta', 'بيستو كازاريتشي', 'Pesto Casarecce', 36],
+    ['pasta_pink_rigatoni', 'pasta', 'ريغاتوني بينك', 'Pink Rigatoni', 32],
+    ['pasta_truffle_rigatoni', 'pasta', 'ريغاتوني ترافل', 'Truffle Rigatoni', 34],
+    ['pasta_pesto_casarecce', 'pasta', 'كازاريتشي بيستو', 'Pesto Casarecce', 36],
     ['appetizer_parmesan_potato_balls', 'appetizers', 'كرات البطاطس بالبارميزان', 'Parmesan Potato Balls', 18],
     ['appetizer_ricotta_cheese_balls', 'appetizers', 'كرات جبنة الريكوتا', 'Ricotta Cheese Balls', 18],
     ['appetizer_mac_cheese_balls', 'appetizers', 'كرات ماك آند تشيز', 'Mac & Cheese Balls', 18],
@@ -91,19 +91,40 @@ test('menu names and SAR prices exactly match the supplied official PDF', () => 
     ['sauce_spicy_olive_oil', 'sauces', 'زيت زيتون حار', 'Spicy Olive Oil', 4],
     ['sauce_truffle_oil', 'sauces', 'زيت الترفل', 'Truffle Oil', 4],
     ['drink_soft_drinks', 'drinks', 'مشروبات غازية', 'Soft Drinks', 3],
+    ['focaccia_turkey_pesto', 'focaccia_sandwiches', 'تيركي بيستو', 'Turkey Pesto', 24],
+    ['focaccia_crunchy_chicken', 'focaccia_sandwiches', 'كرانشي دجاج', 'Crunchy Chicken', 26],
+    ['focaccia_halloumi_pesto', 'focaccia_sandwiches', 'حلومي بيستو', 'Halloumi Pesto', 24],
+    ['focaccia_spicy_tuna', 'focaccia_sandwiches', 'سبايسي تونة', 'Spicy Tuna', 23],
+    ['focaccia_salami_bacon', 'focaccia_sandwiches', 'سلامي وبيكن', 'Salami & Bacon', 26],
+    ['focaccia_burrata', 'focaccia_sandwiches', 'بوراتا', 'Burrata', 28],
+    ['focaccia_bread_garlic_butter', 'focaccia_bread', 'فوكاتشا بالثوم والزبدة', 'Garlic Butter Focaccia', 13],
+    ['focaccia_bread_plain', 'focaccia_bread', 'خبزة فوكاتشا', 'Focaccia Bread', 7],
+    ['focaccia_bread_vegetable', 'focaccia_bread', 'فوكاتشا بالخضار', 'Vegetable Focaccia', 12],
+    ['drink_lavender_limoncello', 'drinks', 'ليمونتشيلو لافندر', 'Lavender Limoncello', 15],
+    ['sauce_pesto_tomato', 'sauces', 'صلصة الطماطم بالبيستو', 'Pesto Tomato Sauce', 4],
+    ['sauce_pesto', 'sauces', 'صوص البيستو', 'Pesto Sauce', 4],
+    ['sauce_mustard_mayo', 'sauces', 'صوص مايو بالخردل', 'Mustard Mayo Sauce', 4],
   ];
   assert.deepEqual(MOZZARO_KNOWLEDGE.menuItems.map(({ id, category, nameAr, nameEn, priceSar }) =>
     [id, category, nameAr, nameEn, priceSar]), expected);
-  assert.equal(MOZZARO_KNOWLEDGE.menuItems.length, 17);
+  assert.equal(MOZZARO_KNOWLEDGE.menuItems.length, 30);
+  assert.equal(new Set(MOZZARO_KNOWLEDGE.menuItems.map(({ id }) => id)).size, 30);
   assert.equal(MOZZARO_KNOWLEDGE.menuItems.find(({ id }) => id === 'pizza_month').priceSar, null);
 });
 
 test('menu FAQ understands Arabic and English item names, categories, and routes unknown details', () => {
-  assert.match(planWhatsAppReply('كم سعر بيتزا المارجريتا؟').reply, /Margherita.*29 ريال/);
-  assert.match(planWhatsAppReply('How much is Truffle Rigatoni?').reply, /Truffle Rigatoni.*34 ريال/);
-  assert.match(planWhatsAppReply('كم أسعار البيتزا؟').reply, /Burrata.*43 ريال/);
-  assert.match(planWhatsAppReply('وش عندكم من صوصات ومشروبات؟').reply, /Spicy Olive Oil.*4 ريال/);
-  assert.match(planWhatsAppReply('وش أسعار المنيو كامل؟').reply, /Soft Drinks.*3 ريال/);
+  assert.equal(planWhatsAppReply('كم سعر بيتزا المارجريتا؟').reply, 'مارجريتا: 29 ريال.');
+  assert.equal(planWhatsAppReply('How much is Truffle Rigatoni?').reply, 'ريغاتوني ترافل: 34 ريال.');
+  assert.match(planWhatsAppReply('كم أسعار البيتزا؟').reply, /بوراتا 43 ريال/);
+  assert.match(planWhatsAppReply('وش عندكم من صوصات ومشروبات؟').reply, /زيت زيتون حار 4 ريال/);
+  assert.equal(planWhatsAppReply('وش أسعار المنيو كامل؟').type, 'document');
+  assert.equal(planWhatsAppReply('كم سعر تيركي بيستو؟').reply, 'تيركي بيستو: 24 ريال.');
+  assert.match(planWhatsAppReply('وش عندكم فوكاتشا؟').reply, /تيركي بيستو 24 ريال/);
+  assert.match(planWhatsAppReply('كم أسعار خبز الفوكاتشا؟').reply, /خبزة فوكاتشا 7 ريال/);
+  assert.equal(planWhatsAppReply('كم سعر بوراتا؟').requiresHuman, true);
+  for (const question of ['كم سعر تيركي بيستو؟', 'وش عندكم فوكاتشا؟', 'كم أسعار خبز الفوكاتشا؟', 'كم باقة 20 شخص؟']) {
+    assert.doesNotMatch(planWhatsAppReply(question).reply, /[A-Za-z]/);
+  }
   const month = planWhatsAppReply('كم سعر بيتزا الشهر؟');
   assert.equal(month.requiresHuman, true);
   assert.match(month.reply, /ما لها سعر ثابت/);
@@ -113,8 +134,9 @@ test('menu FAQ understands Arabic and English item names, categories, and routes
 
 test('Claude allowlisted menu topics render only exact reviewed menu facts', () => {
   assert.equal(MOZZARO_AI_TOPICS.includes('menu_pizza_margherita'), true);
-  assert.equal(renderApprovedTopics(['menu_pizza_margherita']).reply, 'مارجريتا (Margherita): 29 ريال.');
-  assert.match(renderApprovedTopics(['menu_sauces']).reply, /Hot Honey.*4 ريال.*Spicy Olive Oil.*4 ريال.*Truffle Oil.*4 ريال/);
+  assert.equal(renderApprovedTopics(['menu_pizza_margherita']).reply, 'مارجريتا: 29 ريال.');
+  assert.match(renderApprovedTopics(['menu_sauces']).reply, /عسل حار 4 ريال.*زيت زيتون حار 4 ريال.*زيت الترفل 4 ريال/);
+  assert.equal(renderApprovedTopics(['menu_all']).type, 'document');
   assert.equal(renderApprovedTopics(['menu_pizza_month']), null);
   assert.equal(renderApprovedTopics(['menu_unverified_item']), null);
 });
@@ -126,7 +148,60 @@ test('Claude menu topic flows through Render approved copy without free-form gen
   const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 5, knowledge: MOZZARO_KNOWLEDGE,
     phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   assert.deepEqual((await service.process(sample('كم سعر ترافل ريغاتوني؟', 'ai-menu'))).outcomes, { sent: 1 });
-  assert.equal(client.sent[0].text, 'ترافل ريغاتوني (Truffle Rigatoni): 34 ريال.');
+  assert.equal(client.sent[0].text, 'ريغاتوني ترافل: 34 ريال.');
+});
+
+test('official menu PDF is served unchanged over HTTPS-ready route', async (t) => {
+  const server = createWebhookServer();
+  await new Promise((resolve) => server.listen(0, resolve));
+  t.after(() => server.close());
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/menu/mozzaro.pdf`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'application/pdf');
+  assert.match(response.headers.get('content-disposition'), /filename\*=UTF-8/);
+  assert.equal(bytes.subarray(0, 5).toString(), '%PDF-');
+  assert.equal(createHash('sha256').update(bytes).digest('hex'),
+    'c74535c6138fea6abf33a8355704984a49f74251b6e7a26efd61cdb6d8dc7e4d');
+});
+
+test('menu PDF stays gated, then sends once only to the approved pilot number', async () => {
+  const event = sample('أرسل المنيو', 'menu-pilot');
+  event.entry[0].changes[0].value.messages[0].from = '966545383080';
+  const store = new MemoryStore();
+  const sent = [];
+  const client = { sendDocument: async (message) => { sent.push(message); }, sendText: async () => { throw new Error('unexpected text send'); } };
+  const base = { store, client, phoneNumberId: phoneId, enabled: true, coexistenceVerified: true,
+    allowlist: ['966545383080'], menuDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf', now: () => now };
+  const gated = new WhatsAppService(base);
+  assert.deepEqual((await gated.process(event)).outcomes, { menu_document_pending_approval: 1 });
+  assert.equal(sent.length, 0);
+  const liveEvent = sample('أرسل المنيو', 'menu-pilot-approved');
+  liveEvent.entry[0].changes[0].value.messages[0].from = '966545383080';
+  const allowed = new WhatsAppService({ ...base, menuDocumentEnabled: true });
+  assert.deepEqual((await allowed.process(liveEvent)).outcomes, { sent: 1 });
+  assert.deepEqual((await allowed.process(liveEvent)).outcomes, { duplicate: 1 });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].filename, 'منيو موزارو.pdf');
+  assert.equal(sent[0].caption, 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.');
+  assert.deepEqual((await allowed.process(sample('أرسل المنيو', 'menu-other'))).outcomes, { allowlist_blocked: 1 });
+  assert.equal(sent.length, 1);
+});
+
+test('document rejection sends one short Arabic fallback and activates handoff', async () => {
+  const event = sample('المنيو', 'menu-failed');
+  event.entry[0].changes[0].value.messages[0].from = '966545383080';
+  const store = new MemoryStore(), fallback = [];
+  const client = { sendDocument: async () => { const error = new Error('failed'); error.status = 400; error.code = 131009; throw error; },
+    sendText: async (message) => { fallback.push(message); } };
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowlist: ['966545383080'], menuDocumentEnabled: true,
+    menuDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf', now: () => now });
+  assert.deepEqual((await service.process(event)).outcomes, { menu_document_fallback_sent: 1 });
+  assert.deepEqual((await service.process(event)).outcomes, { duplicate: 1 });
+  assert.equal(fallback.length, 1);
+  assert.match(fallback[0].text, /تعذّر إرسال المنيو/);
+  assert.equal((await store.getConversation(store.conversationId(phoneId, '966545383080'))).human_active, true);
 });
 
 test('catering PDF and owner updates define every final package capacity, total, Burrata cap, duration, staff, and price', () => {
@@ -161,12 +236,12 @@ test('catering addon prices match the PDF and by-request/distance charges have n
 
 test('catering FAQ handles guest counts, same-price pasta choices, optional Burrata, staffing, add-ons, and contact safely', () => {
   const standard = planWhatsAppReply('كم باقة 20 شخص؟');
-  assert.match(standard.reply, /Standard/); assert.match(standard.reply, /30 صنف إجمالي/);
+  assert.match(standard.reply, /ستاندرد/); assert.match(standard.reply, /30 صنف إجمالي/);
   assert.match(standard.reply, /تبدأ من 1499 ريال/); assert.doesNotMatch(standard.reply, /0545383080/);
   const premium = planWhatsAppReply('عندي 50 شخص وش يناسبني؟');
-  assert.match(premium.reply, /Premium/); assert.match(premium.reply, /60 صنف إجمالي/);
+  assert.match(premium.reply, /بريميوم/); assert.match(premium.reply, /60 صنف إجمالي/);
   assert.match(premium.reply, /تبدأ من 2799 ريال/);
-  assert.match(planWhatsAppReply('كم باقة ٢٠ شخص؟').reply, /Standard/);
+  assert.match(planWhatsAppReply('كم باقة ٢٠ شخص؟').reply, /ستاندرد/);
   assert.match(planWhatsAppReply('عندكم كيترنق باستا؟').reply, /نفس باقات البيتزا وأسعارها الابتدائية/);
   assert.match(planWhatsAppReply('أقدر أخليها كلها باستا؟').reply, /ما لها تسعيرة باقات منفصلة/);
   assert.match(planWhatsAppReply('أقدر أخلط بيتزا وباستا؟').reply, /ضمن إجمالي عدد أصناف الباقة/);
@@ -188,6 +263,14 @@ test('custom booking, final quote, outside-city service, and unknown catering re
     assert.equal(planWhatsAppReply(text).requiresHuman, true, text);
   }
   assert.equal(planWhatsAppReply('عندي 60 شخص وش يناسبني؟').requiresHuman, true);
+});
+
+test('customer suggestions trigger immediate handoff without an automated answer', () => {
+  for (const text of ['عندي اقتراح', 'عندي فكرة', 'عندي شكوى']) {
+    const plan = planWhatsAppReply(text);
+    assert.equal(plan.requiresHuman, true);
+    assert.equal(plan.reply, null);
+  }
 });
 
 test('Instagram catering answer uses the owner-approved number without changing Instagram reply routing', () => {

@@ -80,3 +80,23 @@ test('Kapso outbound transport is disabled by default and uses only API-key auth
   assert.equal(calls[0].options.headers['X-API-Key'], 'private-test-key');
   assert.doesNotMatch(calls[0].options.body, /private-test-key/);
 });
+
+test('Kapso document delivery uses official link, Arabic caption, and filename in one request', async () => {
+  const calls = [];
+  const now = new Date('2026-09-24T00:00:00Z');
+  const client = new KapsoClient({ apiKey: 'private-test-key', phoneNumberId: phoneId, enabled: true,
+    fetchImpl: async (url, options) => { calls.push({ url, options }); return { ok: true, status: 200,
+      headers: { get: () => null }, json: async () => ({ messages: [{ id: 'wamid.document' }] }) }; } });
+  const caption = 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.';
+  await client.sendDocument({ to: '966545383080', link: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf',
+    caption, filename: 'منيو موزارو.pdf', customerMessageAt: now, now });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, `https://api.kapso.ai/meta/whatsapp/v24.0/${phoneId}/messages`);
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(body.type, 'document');
+  assert.deepEqual(body.document, { link: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf',
+    caption, filename: 'منيو موزارو.pdf' });
+  assert.doesNotMatch(calls[0].options.body, /private-test-key/);
+  await assert.rejects(client.sendDocument({ to: '966545383080', link: 'http://example.com/menu.pdf',
+    caption, filename: 'منيو موزارو.pdf', customerMessageAt: now, now }), /document URL/);
+});

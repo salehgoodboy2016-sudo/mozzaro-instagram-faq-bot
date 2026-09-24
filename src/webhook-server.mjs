@@ -24,6 +24,8 @@ const env = {
   ...parseEnv(await readFile(new URL('../.env', import.meta.url), 'utf8').catch(() => '')),
   ...process.env,
 };
+const officialMenuPdf = await readFile(new URL('../assets/menu/mozzaro-menu.pdf', import.meta.url));
+const officialMenuEtag = `"${createHash('sha256').update(officialMenuPdf).digest('hex')}"`;
 const CLAUDE_KNOWLEDGE = Object.freeze({
   ...Object.fromEntries(Object.entries(MOZZARO_KNOWLEDGE).filter(([key]) => key !== 'localChickenText' && key !== 'cateringText')),
   cateringText: `لتفاصيل وحجوزات الكيترنق تواصلوا على ${MOZZARO_KNOWLEDGE.cateringContact} (${MOZZARO_KNOWLEDGE.cateringContactInternational}).`,
@@ -56,6 +58,8 @@ const config = {
   kapsoApiKey: env.KAPSO_API_KEY || '',
   kapsoPhoneNumberId: env.KAPSO_PHONE_NUMBER_ID || '',
   kapsoApiVersion: env.KAPSO_WHATSAPP_API_VERSION || 'v24.0',
+  kapsoMenuDocumentEnabled: env.KAPSO_MENU_DOCUMENT_ENABLED === 'true',
+  kapsoMenuDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf',
   kapsoCoexistenceVerified: env.KAPSO_COEXISTENCE_VERIFIED === 'true',
   kapsoEmployeeEchoVerified: env.KAPSO_EMPLOYEE_ECHO_VERIFIED === 'true',
   whatsappAutomationAllowlist: String(env.WHATSAPP_AUTOMATION_ALLOWLIST || '').split(',').map((value) => value.trim()).filter(Boolean),
@@ -179,6 +183,12 @@ export function createWebhookServer(overrides = {}) {
   const automationService = kapsoService || whatsappService;
   return createServer(async (req, res) => {
     try {
+    if (['GET', 'HEAD'].includes(req.method) && new URL(req.url || '/', 'http://localhost').pathname === '/menu/mozzaro.pdf') {
+      res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': officialMenuPdf.length,
+        'Content-Disposition': "inline; filename*=UTF-8''%D9%85%D9%86%D9%8A%D9%88%20%D9%85%D9%88%D8%B2%D8%A7%D8%B1%D9%88.pdf",
+        'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff', ETag: officialMenuEtag });
+      res.end(req.method === 'HEAD' ? undefined : officialMenuPdf); return;
+    }
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -190,6 +200,7 @@ export function createWebhookServer(overrides = {}) {
         whatsappAutoReplyEnabled: handlerConfig.whatsappEnabled,
         kapsoWebhookConfigured: Boolean(handlerConfig.kapsoWebhookSecret),
         kapsoAutoReplyEnabled: handlerConfig.kapsoEnabled,
+        kapsoMenuDocumentEnabled: handlerConfig.kapsoMenuDocumentEnabled,
         claudeAiEnabled: handlerConfig.claudeAiEnabled === true && Boolean(handlerConfig.claudeApiKey && handlerConfig.claudeModel
           && handlerConfig.claudeMonthlyLimitUsd > 0 && handlerConfig.claudeInputUsdPerMillion > 0 && handlerConfig.claudeOutputUsdPerMillion > 0),
       })); return;
@@ -379,6 +390,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const kapsoService = new WhatsAppService({ store: whatsappStore, client: kapsoClient,
     enabled: config.kapsoEnabled, coexistenceVerified: config.kapsoCoexistenceVerified,
     phoneNumberId: config.kapsoPhoneNumberId, allowlist: config.whatsappAutomationAllowlist,
+    menuDocumentEnabled: config.kapsoMenuDocumentEnabled, menuDocumentUrl: config.kapsoMenuDocumentUrl,
     aiClient: claudeClient, aiMonthlyLimitUsd: config.claudeMonthlyLimitUsd, knowledge: CLAUDE_KNOWLEDGE });
   const server = createWebhookServer({ whatsappService, kapsoService });
   server.listen(config.port, () => {

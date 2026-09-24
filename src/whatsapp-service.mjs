@@ -42,7 +42,8 @@ function normalizeIdentity(value) {
 
 export class WhatsAppService {
   constructor({ store = null, client = null, aiClient = null, aiMonthlyLimitUsd = 0,
-    knowledge = null, enabled = false, phoneNumberId, coexistenceVerified = false, allowlist = [], now = () => new Date() }) {
+    knowledge = null, enabled = false, phoneNumberId, coexistenceVerified = false, allowlist = [],
+    menuDocumentEnabled = false, menuDocumentUrl = '', now = () => new Date() }) {
     this.store = store;
     this.client = client;
     this.aiClient = aiClient;
@@ -52,6 +53,8 @@ export class WhatsAppService {
     this.phoneNumberId = phoneNumberId;
     this.coexistenceVerified = coexistenceVerified;
     this.allowlist = new Set(allowlist.map(normalizeIdentity).filter(Boolean));
+    this.menuDocumentEnabled = menuDocumentEnabled;
+    this.menuDocumentUrl = menuDocumentUrl;
     this.now = now;
     if (enabled && (!store || !client || !coexistenceVerified || !phoneNumberId || !this.allowlist.size)) {
       throw new Error('WhatsApp automation requires a persistent store, outbound transport, verified Coexistence, phone ID, and a non-empty test allowlist');
@@ -113,7 +116,8 @@ export class WhatsAppService {
     }
     let plan = planWhatsAppReply(event.text, this.now());
     let aiContext = [];
-    if (this.enabled && this.aiClient?.enabled && (!plan.requiresHuman || plan.reason === 'unknown_question') && this.knowledge) {
+    if (this.enabled && this.aiClient?.enabled && plan.type !== 'document' && !plan.ambiguity
+      && (!plan.requiresHuman || plan.reason === 'unknown_question') && this.knowledge) {
       aiContext = await this.store.getAiContext?.(conversationId) || [];
       if (event.text.length > 2500) {
         await this.store.claimHumanHandoff(conversationId, 'message_too_long');
@@ -173,6 +177,10 @@ export class WhatsAppService {
       await this.store.setOutcome(event.id, 'automation_disabled');
       return 'automation_disabled';
     }
+    if (plan.type === 'document' && !this.menuDocumentEnabled) {
+      await this.store.setOutcome(event.id, 'menu_document_pending_approval');
+      return 'menu_document_pending_approval';
+    }
     if (this.now().getTime() - event.at.getTime() >= 24 * 60 * 60_000) {
       await this.store.setOutcome(event.id, 'outside_service_window');
       return 'outside_service_window';
@@ -184,7 +192,24 @@ export class WhatsAppService {
     try {
       // A reserved send is never automatically retried. A timeout after Meta
       // accepts the request is ambiguous and retrying could duplicate a reply.
-      await this.client.sendText({ to: event.sender, text: plan.reply, customerMessageAt: event.at, now: this.now() });
+      if (plan.type === 'document') {
+        try {
+          if (!this.menuDocumentUrl || typeof this.client.sendDocument !== 'function') throw new Error('Document transport unavailable');
+          await this.client.sendDocument({ to: event.sender, link: this.menuDocumentUrl,
+            caption: plan.reply, filename: 'منيو موزارو.pdf', customerMessageAt: event.at, now: this.now() });
+        } catch (error) {
+          console.error(JSON.stringify({ service: 'whatsapp-automation', outcome: 'menu_document_failed',
+            status: error.status ?? null, code: error.code ?? null }));
+          await this.store.claimHumanHandoff(conversationId, 'menu_document_failed');
+          await this.client.sendText({ to: event.sender,
+            text: 'عذرًا، تعذّر إرسال المنيو الآن. إذا تبي، أوصلك بأحد الفريق يساعدك.',
+            customerMessageAt: event.at, now: this.now() });
+          await this.store.setOutcome(event.id, 'menu_document_fallback_sent');
+          return 'menu_document_fallback_sent';
+        }
+      } else {
+        await this.client.sendText({ to: event.sender, text: plan.reply, customerMessageAt: event.at, now: this.now() });
+      }
       if (this.aiClient?.enabled) await this.store.appendAiContext?.(conversationId, event.text, plan.reply);
       await this.store.setOutcome(event.id, 'sent');
       return 'sent';
