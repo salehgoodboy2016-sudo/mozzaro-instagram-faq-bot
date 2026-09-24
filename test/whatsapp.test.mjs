@@ -211,7 +211,7 @@ test('official catering PDF is served unchanged at a separate document URL', asy
   assert.match(response.headers.get('content-disposition'), /filename\*=UTF-8''%D9%83%D9%8A%D8%AA%D8%B1%D9%86%D9%82%20%D9%85%D9%88%D8%B2%D8%A7%D8%B1%D9%88.pdf/);
   assert.equal(bytes.subarray(0, 5).toString(), '%PDF-');
   assert.equal(createHash('sha256').update(bytes).digest('hex'),
-    '0fc5cf6e927dc9320c016a3fe3bc50ad276b6af5375f8eaf30ca4e3267149db0');
+    '86b78b1e769304253e5900aec71fb32b72d7f51830d3a3da13b7d788ea0a144b');
 });
 
 test('menu PDF stays gated, then sends once only to the approved pilot number', async () => {
