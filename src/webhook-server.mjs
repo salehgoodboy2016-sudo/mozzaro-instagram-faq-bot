@@ -29,7 +29,12 @@ const officialMenuEtag = `"${createHash('sha256').update(officialMenuPdf).digest
 const officialCateringPdf = await readFile(new URL('../assets/menu/mozzaro-catering.pdf', import.meta.url));
 const officialCateringEtag = `"${createHash('sha256').update(officialCateringPdf).digest('hex')}"`;
 const CLAUDE_KNOWLEDGE = Object.freeze({
-  ...Object.fromEntries(Object.entries(MOZZARO_KNOWLEDGE).filter(([key]) => key !== 'localChickenText' && key !== 'cateringText')),
+  ...Object.fromEntries(Object.entries(MOZZARO_KNOWLEDGE).filter(([key]) => ![
+    'localChickenText', 'cateringText', 'whatsappOrdersText', 'whatsappDeliveryText', 'whatsappOrdersContactText',
+  ].includes(key))),
+  ordersText: MOZZARO_KNOWLEDGE.whatsappOrdersText,
+  deliveryText: MOZZARO_KNOWLEDGE.whatsappDeliveryText,
+  ordersContactText: MOZZARO_KNOWLEDGE.whatsappOrdersContactText,
   cateringText: `لتفاصيل وحجوزات الكيترنق تواصلوا على ${MOZZARO_KNOWLEDGE.cateringContact} (${MOZZARO_KNOWLEDGE.cateringContactInternational}).`,
 });
 const config = {

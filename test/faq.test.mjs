@@ -39,5 +39,8 @@ test('catering and orders can be combined', () => {
   const result = composeReply('هلا ابغى كيترنق وكيف اطلب؟');
   assert.match(result.reply, /^أهلين/); assert.match(result.reply, /0565017314/); assert.doesNotMatch(result.reply, /0545383080/);
 });
+test('Instagram order FAQ retains its existing response while WhatsApp has channel-specific approved copy', () => {
+  assert.equal(composeReply('كيف أطلب؟').reply, 'للطلبات، اتصلوا على الرقم التالي ويرد عليكم الكاشير: 0565017314');
+});
 test('complaints are flagged without a reply', () => assert.equal(composeReply('عندي شكوى عن تأخير الطلب').reply, null));
 test('unrelated text has no reply', () => assert.deepEqual(classifyFaq('وش أخبارك؟').topics, []));

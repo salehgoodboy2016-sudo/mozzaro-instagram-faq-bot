@@ -5,9 +5,9 @@ const ANSWERS = Object.freeze({
   suppliers: MOZZARO_KNOWLEDGE.suppliersText,
   hours: MOZZARO_KNOWLEDGE.hoursText,
   catering: MOZZARO_KNOWLEDGE.cateringText,
-  orders: MOZZARO_KNOWLEDGE.ordersText,
-  delivery: MOZZARO_KNOWLEDGE.deliveryText,
-  orders_contact: MOZZARO_KNOWLEDGE.ordersContactText,
+  orders: MOZZARO_KNOWLEDGE.whatsappOrdersText,
+  delivery: MOZZARO_KNOWLEDGE.whatsappDeliveryText,
+  orders_contact: MOZZARO_KNOWLEDGE.whatsappOrdersContactText,
 });
 
 const CATERING_INCLUSION_TEXT = Object.freeze({
