@@ -296,6 +296,22 @@ export function createWebhookServer(overrides = {}) {
           { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(result)); return;
       }
+      if (req.method === 'POST' && pathname === '/admin/whatsapp/resume-all-conversations') {
+        const raw = await readLimitedBody(req);
+        if (!raw) { res.writeHead(413); res.end('Payload too large'); return; }
+        let body; try { body = JSON.parse(raw.toString('utf8')); } catch {
+          res.writeHead(400); res.end('Invalid JSON'); return;
+        }
+        if (!automationService?.store?.resumeAllConversations || body.confirmed !== true
+          || !/^[a-f0-9-]{36}$/i.test(String(body.requestId || ''))) {
+          res.writeHead(400); res.end('Invalid bulk conversation resume'); return;
+        }
+        const result = await automationService.store.resumeAllConversations(body.requestId);
+        console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'operator_bulk_resume',
+          outcome: result.outcome, resumed: result.resumed, clearedPending: result.clearedPending }));
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(result)); return;
+      }
       res.writeHead(404); res.end('Not found'); return;
     }
     if (req.method === 'GET' && req.url?.startsWith('/webhooks/instagram')) {

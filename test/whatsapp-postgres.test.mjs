@@ -87,6 +87,26 @@ test('PostgreSQL migrations are repeatable and persist deduplication and handoff
   assert.equal(protectedConversation.handoff_expires_at, null);
   assert.deepEqual(await secondStore.claimExpiredHandoffs({ conversationId: protectedId }), []);
 
+  const bulkPausedId = secondStore.conversationId('816217614914860', '966500000096');
+  await secondStore.claimHumanHandoff(bulkPausedId, 'employee_requested');
+  const bulkPending = { id: 'incoming:bulk-pending', conversationId: bulkPausedId,
+    type: 'incoming', at: new Date() };
+  assert.equal(await secondStore.recordEvent(bulkPending), true);
+  assert.equal(await secondStore.queuePendingMessage({ ...bulkPending, sender: '966500000096', text: 'هلا', type: 'text' },
+    { requiresHuman: false }), true);
+  const bulkRequestId = 'da983ab7-7979-4c1e-bdcb-8e97a6d83cca';
+  const bulkResult = await secondStore.resumeAllConversations(bulkRequestId);
+  assert.equal(bulkResult.outcome, 'resumed');
+  assert.ok(bulkResult.resumed >= 2);
+  assert.equal(bulkResult.clearedPending, 1);
+  assert.equal((await secondStore.getConversation(protectedId)).human_active, false);
+  assert.equal((await secondStore.getConversation(bulkPausedId)).human_active, false);
+  assert.equal((await pool.query('SELECT count(*)::int AS count FROM whatsapp_pending_messages')).rows[0].count, 0);
+  assert.equal((await pool.query('SELECT outcome FROM whatsapp_events WHERE event_id=$1',
+    [bulkPending.id])).rows[0].outcome, 'pending_cleared_by_operator');
+  assert.deepEqual(await secondStore.resumeAllConversations(bulkRequestId),
+    { outcome: 'already_consumed', resumed: 0, clearedPending: 0 });
+
   const raceId = secondStore.conversationId('816217614914860', '966500000097');
   const raceAt = new Date();
   const raceEvent = { id: 'incoming:employee-race', conversationId: raceId, type: 'incoming', at: raceAt };

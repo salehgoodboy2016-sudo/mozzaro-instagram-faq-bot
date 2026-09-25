@@ -103,3 +103,25 @@ test('rejects unsigned, forged and malformed signatures; fails closed without se
     }
   }
 });
+
+test('bulk conversation resume is authenticated and requires explicit confirmation', async (t) => {
+  const calls = [];
+  const kapsoService = { store: { resumeAllConversations: async (requestId) => {
+    calls.push(requestId); return { outcome: 'resumed', resumed: 3, clearedPending: 1 };
+  } } };
+  const server = createWebhookServer({ adminApiToken: 'admin-test-token', kapsoService });
+  await new Promise((resolve) => server.listen(0, resolve)); t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}/admin/whatsapp/resume-all-conversations`;
+  const unauthorized = await fetch(url, { method: 'POST', body: '{}' });
+  assert.equal(unauthorized.status, 401);
+  const missingConfirmation = await fetch(url, { method: 'POST', headers: {
+    authorization: 'Bearer admin-test-token', 'content-type': 'application/json' },
+  body: JSON.stringify({ requestId: 'da983ab7-7979-4c1e-bdcb-8e97a6d83cca' }) });
+  assert.equal(missingConfirmation.status, 400);
+  const response = await fetch(url, { method: 'POST', headers: {
+    authorization: 'Bearer admin-test-token', 'content-type': 'application/json' },
+  body: JSON.stringify({ confirmed: true, requestId: 'da983ab7-7979-4c1e-bdcb-8e97a6d83cca' }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { outcome: 'resumed', resumed: 3, clearedPending: 1 });
+  assert.deepEqual(calls, ['da983ab7-7979-4c1e-bdcb-8e97a6d83cca']);
+});

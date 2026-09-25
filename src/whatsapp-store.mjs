@@ -88,6 +88,45 @@ export class WhatsAppStore {
     }
   }
 
+  // Owner-authorized bulk recovery for conversations that were left paused.
+  // Pending inquiries are deliberately discarded so this operation never sends
+  // stale or duplicate customer replies; only a future inbound message resumes AI.
+  async resumeAllConversations(requestId) {
+    if (!/^[a-f0-9-]{36}$/i.test(String(requestId || ''))) {
+      throw new Error('Invalid bulk resume request');
+    }
+    const operationId = `operator_bulk_resume:${requestId}`;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const inserted = await client.query(`INSERT INTO whatsapp_events
+        (event_id, conversation_id, event_type, outcome, event_at)
+        VALUES ($1,NULL,'operator_bulk_resume','applied',now())
+        ON CONFLICT DO NOTHING RETURNING event_id`, [operationId]);
+      if (!inserted.rowCount) {
+        await client.query('COMMIT');
+        return { outcome: 'already_consumed', resumed: 0, clearedPending: 0 };
+      }
+
+      const pending = await client.query(`UPDATE whatsapp_events
+        SET outcome='pending_cleared_by_operator',updated_at=now()
+        WHERE event_id IN (SELECT event_id FROM whatsapp_pending_messages)
+        RETURNING event_id`);
+      await client.query('DELETE FROM whatsapp_pending_messages');
+      const resumed = await client.query(`UPDATE whatsapp_conversations SET
+        human_active=false,handoff_reason=NULL,handoff_protected=false,
+        handoff_expires_at=NULL,updated_at=now()
+        WHERE human_active=true RETURNING conversation_id`);
+      await client.query('COMMIT');
+      return { outcome: 'resumed', resumed: resumed.rowCount, clearedPending: pending.rowCount };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async claimHumanHandoff(id, reason) {
     const result = await this.pool.query(`INSERT INTO whatsapp_conversations
       (conversation_id, human_active, handoff_reason, handoff_protected, handoff_expires_at) VALUES ($1,true,$2,true,NULL)
