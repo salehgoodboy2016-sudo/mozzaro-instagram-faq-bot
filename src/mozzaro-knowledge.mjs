@@ -16,6 +16,8 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
   whatsappOrdersContactText: 'رقم موزارو: 0565017314',
   orderChannels: Object.freeze(['drive_thru', 'phone', 'keeta', 'hungerstation']),
   whatsappDeliveryText: 'التوصيل متوفر داخل الأحساء عن طريق تطبيقَي كيتا وهنقرستيشن، حسب نطاق التغطية في التطبيق.',
+  googleMapsUrl: 'https://maps.app.goo.gl/q2d6CjWvMAnaF7xx9?g_st=ic',
+  locationText: 'حياك الله، هذا موقع موزارو على خرائط Google:\nhttps://maps.app.goo.gl/q2d6CjWvMAnaF7xx9?g_st=ic',
   deliveryRules: Object.freeze({ directRestaurantDelivery: false, coverageMustBeCheckedInApp: true,
     neverPromiseFeesTimesMinimumsOrUnverifiedAreas: true }),
   // Transcribed from the official Mozzaro menu PDF supplied on 2026-09-24.
@@ -108,7 +110,7 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
 });
 
 export const MOZZARO_AI_TOPICS = Object.freeze([
-  'suppliers', 'hours', 'catering', 'orders', 'delivery', 'orders_contact',
+  'suppliers', 'hours', 'catering', 'orders', 'delivery', 'orders_contact', 'location',
   'catering_packages', 'catering_types', 'catering_burrata', 'catering_staff', 'catering_addons',
   'catering_hours', 'catering_inclusions', 'catering_contact',
   'menu_pizza', 'menu_pasta', 'menu_appetizers', 'menu_sauces', 'menu_drinks',

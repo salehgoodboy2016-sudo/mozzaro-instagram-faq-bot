@@ -139,6 +139,47 @@ test('ordering and delivery use approved Arabic wording and do not claim direct 
   assert.deepEqual(MOZZARO_KNOWLEDGE.orderChannels, ['drive_thru', 'phone', 'keeta', 'hungerstation']);
 });
 
+test('location questions use only the owner-approved Google Maps link and can combine with another topic', () => {
+  const url = 'https://maps.app.goo.gl/q2d6CjWvMAnaF7xx9?g_st=ic';
+  const approved = `حياك الله، هذا موقع موزارو على خرائط Google:\n${url}`;
+  assert.equal(MOZZARO_KNOWLEDGE.googleMapsUrl, url);
+  assert.equal(MOZZARO_KNOWLEDGE.locationText, approved);
+  for (const question of ['وين موقعكم', 'ممكن اللوكيشن', 'الموقع', 'وين المحل بالضبط',
+    'ارسل اللوكيشن لو سمحت', 'وين مكانكم؟', 'وين موزارو؟', 'Location', 'Google Maps', 'Where are you located?']) {
+    const plan = planWhatsAppReply(question);
+    assert.equal(plan.reply, approved, question);
+    assert.deepEqual(plan.topics, ['location'], question);
+    assert.equal(plan.requiresHuman, false, question);
+    assert.equal(plan.deterministic, true, question);
+    assert.equal(plan.type, undefined, question);
+  }
+  const combined = planWhatsAppReply('وين موقعكم ومتى تفتحون؟');
+  assert.match(combined.reply, /12 الظهر إلى 3 الفجر/);
+  assert.match(combined.reply, new RegExp(url.replace(/[.?]/g, '\\$&')));
+  assert.deepEqual(combined.topics, ['location', 'hours']);
+  assert.equal(renderApprovedTopics(['location']).reply, approved);
+});
+
+test('location is deterministic, acknowledgment stays silent, and a later question still receives an answer', async () => {
+  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  let aiCalls = 0;
+  const aiClient = { enabled: true, inputUsdPerMillion: 1, outputUsdPerMillion: 1,
+    estimateUsd: () => 0.001,
+    answer: async () => { aiCalls++; return { action: 'answer', topics: ['hours'], inputTokens: 2, outputTokens: 2 }; } };
+  const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 5, knowledge: MOZZARO_KNOWLEDGE,
+    phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+
+  assert.deepEqual((await service.process(sample('ممكن ترسل الموقع؟', 'location-live'))).outcomes, { sent: 1 });
+  assert.equal(aiCalls, 0);
+  assert.match(client.sent[0].text, /maps\.app\.goo\.gl\/q2d6CjWvMAnaF7xx9\?g_st=ic/);
+  assert.deepEqual((await service.process(sample('تمام', 'location-ack'))).outcomes, { silent_no_reply: 1 });
+  assert.equal(client.sent.length, 1);
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'location-followup'))).outcomes, { sent: 1 });
+  assert.equal(aiCalls, 1);
+  assert.equal(client.sent.length, 2);
+  assert.match(client.sent[1].text, /12 الظهر إلى 3 الفجر/);
+});
+
 test('complaints use internal handoff while unknown questions remain silent', () => {
   const complaint = planWhatsAppReply('طلبي ناقص وتأخر');
   assert.equal(complaint.reason, 'complaint');

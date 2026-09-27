@@ -159,6 +159,7 @@ export class WhatsAppService {
     }
     let aiContext = [];
     if (this.enabled && this.aiClient?.enabled && event.text.trim() && !['document', 'catering_document'].includes(plan.type) && !plan.ambiguity
+      && !plan.deterministic
       && (!plan.requiresHuman || plan.reason === 'unknown_question') && this.knowledge) {
       aiContext = await this.store.getAiContext?.(conversationId) || [];
       if (event.text.length > 2500) {

@@ -8,6 +8,7 @@ const ANSWERS = Object.freeze({
   orders: MOZZARO_KNOWLEDGE.whatsappOrdersText,
   delivery: MOZZARO_KNOWLEDGE.whatsappDeliveryText,
   orders_contact: MOZZARO_KNOWLEDGE.whatsappOrdersContactText,
+  location: MOZZARO_KNOWLEDGE.locationText,
 });
 
 const CATERING_INCLUSION_TEXT = Object.freeze({
@@ -73,6 +74,13 @@ const CONVERSATION_ENDINGS = new Set([
 
 function isConversationEnding(text) {
   return CONVERSATION_ENDINGS.has(text);
+}
+
+function isLocationQuestion(text) {
+  return includes(text, [
+    'موقع', 'المكان', 'مكانكم', 'وين المحل', 'وين موزارو', 'لوكيشن', 'اللوكيشن',
+    'location', 'google maps', 'where are you located', 'where is mozzaro', 'directions',
+  ]);
 }
 
 function silentPlan(reason = 'unknown_question', extra = {}) {
@@ -285,21 +293,28 @@ export function planWhatsAppReply(rawText, now = new Date()) {
 
   const asksHours = includes(text, ['ساعات', 'اوقات', 'دوام', 'تفتح', 'يفتح', 'فاتحين', 'مفتوح', 'تقفل', 'تسكر',
     'متى تفتح', 'متى تقفل', 'hours', 'open', 'closing']);
+  const asksLocation = isLocationQuestion(text);
 
   const cateringContext = isCateringQuestion(text);
   if (isCustomCateringRequest(text)) {
     return { reply: null, topics: [], requiresHuman: true, reason: 'human_request' };
   }
   if (cateringContext) {
-    return { reply: 'حياك الله، أكيد نوفر خدمة الكيترنق للمناسبات. تفضل ملف الكيترنق، فيه التفاصيل والأسعار. وإذا حاب تحجز أو عندك أي استفسار، يسعدنا نخدمك.',
-      type: 'catering_document', documentKind: 'catering', topics: ['catering_document_request'], requiresHuman: false };
+    const reply = 'حياك الله، أكيد نوفر خدمة الكيترنق للمناسبات. تفضل ملف الكيترنق، فيه التفاصيل والأسعار. وإذا حاب تحجز أو عندك أي استفسار، يسعدنا نخدمك.';
+    return { reply: asksLocation ? `${reply}\n\n${ANSWERS.location}` : reply,
+      type: 'catering_document', documentKind: 'catering',
+      topics: asksLocation ? ['catering_document_request', 'location'] : ['catering_document_request'],
+      requiresHuman: false, deterministic: asksLocation };
   }
 
   const greeting = islamicGreeting ? 'وعليكم السلام ورحمة الله وبركاته' : casualGreeting ? 'أهلين' : null;
   const asksOrderPhone = includes(text, ['ممكن الرقم', 'ممكن رقم', 'ابي الرقم', 'أبي الرقم', 'رقم الاتصال', 'رقم موزارو', 'رقم الطلب', 'رقم التواصل', 'رقمكم', 'رقم الهاتف', 'وش رقم', 'رقم جوال', 'phone number', 'contact number']);
-  if (asksOrderPhone) return { reply: ANSWERS.orders_contact, topics: ['orders_contact'], requiresHuman: false };
+  if (asksOrderPhone) return { reply: asksLocation ? `${ANSWERS.orders_contact}\n\n${ANSWERS.location}` : ANSWERS.orders_contact,
+    topics: asksLocation ? ['orders_contact', 'location'] : ['orders_contact'], requiresHuman: false, deterministic: asksLocation };
   if (includes(text, ['توصيل', 'يوصل', 'توصلون', 'توصيل الطلب', 'delivery', 'deliver'])) {
-    return { reply: `${greeting ? `${greeting}، ` : ''}${ANSWERS.delivery}`, topics: ['delivery'], requiresHuman: false };
+    const reply = `${greeting ? `${greeting}، ` : ''}${ANSWERS.delivery}`;
+    return { reply: asksLocation ? `${reply}\n\n${ANSWERS.location}` : reply,
+      topics: asksLocation ? ['delivery', 'location'] : ['delivery'], requiresHuman: false, deterministic: asksLocation };
   }
 
   const topics = [];
@@ -320,10 +335,13 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     }
   }
   if (menuTopics.includes('menu_all')) {
-    return { reply: 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.',
-      type: 'document', topics: ['menu_all'], requiresHuman: false };
+    const reply = 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.';
+    return { reply: asksLocation ? `${reply}\n\n${ANSWERS.location}` : reply,
+      type: 'document', topics: asksLocation ? ['menu_all', 'location'] : ['menu_all'],
+      requiresHuman: false, deterministic: asksLocation };
   }
   if (menuTopics.length) topics.push(...menuTopics);
+  if (asksLocation) topics.push('location');
   if (includes(text, ['دجاج', 'لحم', 'لحوم', 'مصدر', 'مورد', 'chicken', 'meat'])
     || (includes(text, ['بيبروني', 'ببروني', 'pepperoni']) && includes(text, ['من وين', 'مصدر', 'مورد', 'supplier']))) topics.push('suppliers');
   if (includes(text, ['ساعات', 'اوقات', 'دوام', 'تفتح', 'يفتح', 'فاتحين', 'مفتوح', 'تقفل', 'تسكر', 'متى تفتح', 'متى تقفل', 'hours', 'open'])) topics.push('hours');
@@ -355,11 +373,11 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     }
     parts.push(ANSWERS[topic]);
   }
-  return { reply: parts.join(' '), topics, requiresHuman: false };
+  return { reply: parts.join(' '), topics, requiresHuman: false, deterministic: asksLocation };
 }
 
 export function renderApprovedTopics(topics, now = new Date()) {
-  const allowed = new Set(['suppliers', 'hours', 'catering', 'orders', 'delivery', 'orders_contact', 'menu_pizza', 'menu_pasta',
+  const allowed = new Set(['suppliers', 'hours', 'catering', 'orders', 'delivery', 'orders_contact', 'location', 'menu_pizza', 'menu_pasta',
     'menu_appetizers', 'menu_sauces', 'menu_drinks', 'menu_focaccia_sandwiches', 'menu_focaccia_bread', 'menu_all',
     'catering_packages', 'catering_types', 'catering_burrata', 'catering_staff', 'catering_addons',
     'catering_hours', 'catering_inclusions', 'catering_contact', 'catering_document_request',
@@ -385,6 +403,8 @@ export function renderApprovedTopics(topics, now = new Date()) {
       parts.push(cateringAnswer);
     } else if (topic === 'catering') {
       parts.push(renderCateringTopic('catering_contact'));
+    } else if (topic === 'location') {
+      parts.push(ANSWERS.location);
     } else if (topic.startsWith('menu_')) {
       const menuAnswer = renderMenuTopic(topic);
       if (!menuAnswer) return null;
