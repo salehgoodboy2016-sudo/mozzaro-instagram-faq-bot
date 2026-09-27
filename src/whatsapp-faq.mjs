@@ -11,6 +11,9 @@ const ANSWERS = Object.freeze({
   location: MOZZARO_KNOWLEDGE.locationText,
 });
 
+const MENU_DOCUMENT_MESSAGE = 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.';
+const CATERING_DOCUMENT_MESSAGE = 'حياك الله، أكيد نوفر خدمة الكيترنق للمناسبات. تفضل ملف الكيترنق، فيه التفاصيل والأسعار. وإذا حاب تحجز أو عندك أي استفسار، يسعدنا نخدمك.';
+
 const CATERING_INCLUSION_TEXT = Object.freeze({
   service_booth: 'بوث تقديم', boxes: 'بوكسات', plates: 'صحون', serving_sauces: 'صوصات تقديم',
   soft_drinks: 'مشروبات غازية', city_booth_transport: 'نقل البوث داخل المدينة',
@@ -81,6 +84,44 @@ function isLocationQuestion(text) {
     'موقع', 'المكان', 'مكانكم', 'وين المحل', 'وين موزارو', 'لوكيشن', 'اللوكيشن',
     'location', 'google maps', 'where are you located', 'where is mozzaro', 'directions',
   ]);
+}
+
+function isMenuDocumentRequest(text, cateringContext = false) {
+  const menuTopics = menuTopicsFor(text);
+  const explicitMenu = includes(text, [
+    'المنيو', 'المينيو', 'منيو', 'قائمه الطعام', 'قائمة الطعام', 'food menu', 'what is the menu', 'menu',
+  ]);
+  const priceRequest = includes(text, ['الاسعار', 'الأسعار', 'اسعار', 'أسعار', 'prices', 'price', 'how much', 'بكم', 'كم السعر', 'كم سعر'])
+    || (includes(text, ['كم']) && menuTopics.length > 0);
+  const categoryListing = menuTopics.length > 0 && includes(text, ['وش عندكم', 'ايش عندكم', 'إيش عندكم', 'وش الاصناف', 'وش الأصناف']);
+  if (!cateringContext) return explicitMenu || priceRequest || categoryListing;
+
+  const explicitlyCombined = includes(text, [
+    'المنيو والكيترنق', 'المنيو و الكيترنق', 'المينيو والكيترنق', 'منيو المطعم والكيترنق',
+    'المنيو والكاترينج', 'منيو وكيترنق', 'منيو وكيترينق', 'المنيو مع الكيترنق', 'menu and catering',
+  ]);
+  return explicitlyCombined;
+}
+
+function approvedDocumentPlan({ menu = false, catering = false, location = false } = {}) {
+  const locationSuffix = location ? `\n\n${ANSWERS.location}` : '';
+  const menuCaption = menu ? `${MENU_DOCUMENT_MESSAGE}${locationSuffix}` : null;
+  const cateringMessage = catering
+    ? `${CATERING_DOCUMENT_MESSAGE}${!menu ? locationSuffix : ''}`
+    : null;
+  const documentKinds = [menu ? 'menu' : null, catering ? 'catering' : null].filter(Boolean);
+  return {
+    reply: menuCaption || cateringMessage,
+    menuCaption,
+    cateringMessage,
+    type: documentKinds.length > 1 ? 'documents' : catering ? 'catering_document' : 'document',
+    documentKinds,
+    documentKind: documentKinds.length === 1 ? documentKinds[0] : undefined,
+    topics: [...(menu ? ['menu_all'] : []), ...(catering ? ['catering_document_request'] : []),
+      ...(location ? ['location'] : [])],
+    requiresHuman: false,
+    deterministic: true,
+  };
 }
 
 function silentPlan(reason = 'unknown_question', extra = {}) {
@@ -299,12 +340,9 @@ export function planWhatsAppReply(rawText, now = new Date()) {
   if (isCustomCateringRequest(text)) {
     return { reply: null, topics: [], requiresHuman: true, reason: 'human_request' };
   }
-  if (cateringContext) {
-    const reply = 'حياك الله، أكيد نوفر خدمة الكيترنق للمناسبات. تفضل ملف الكيترنق، فيه التفاصيل والأسعار. وإذا حاب تحجز أو عندك أي استفسار، يسعدنا نخدمك.';
-    return { reply: asksLocation ? `${reply}\n\n${ANSWERS.location}` : reply,
-      type: 'catering_document', documentKind: 'catering',
-      topics: asksLocation ? ['catering_document_request', 'location'] : ['catering_document_request'],
-      requiresHuman: false, deterministic: asksLocation };
+  const menuDocumentRequested = isMenuDocumentRequest(text, cateringContext);
+  if (cateringContext || menuDocumentRequested) {
+    return approvedDocumentPlan({ menu: menuDocumentRequested, catering: cateringContext, location: asksLocation });
   }
 
   const greeting = islamicGreeting ? 'وعليكم السلام ورحمة الله وبركاته' : casualGreeting ? 'أهلين' : null;
@@ -335,10 +373,7 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     }
   }
   if (menuTopics.includes('menu_all')) {
-    const reply = 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.';
-    return { reply: asksLocation ? `${reply}\n\n${ANSWERS.location}` : reply,
-      type: 'document', topics: asksLocation ? ['menu_all', 'location'] : ['menu_all'],
-      requiresHuman: false, deterministic: asksLocation };
+    return approvedDocumentPlan({ menu: true, location: asksLocation });
   }
   if (menuTopics.length) topics.push(...menuTopics);
   if (asksLocation) topics.push('location');
@@ -386,12 +421,10 @@ export function renderApprovedTopics(topics, now = new Date()) {
   for (const addon of MOZZARO_KNOWLEDGE.cateringAddons) allowed.add(`catering_addon_${addon.id}`);
   if (!Array.isArray(topics) || !topics.length || topics.some((topic) => !allowed.has(topic))) return null;
   if (topics.some((topic) => topic === 'catering' || topic.startsWith('catering_'))) {
-    return { reply: 'حياك الله، أكيد نوفر خدمة الكيترنق للمناسبات. تفضل ملف الكيترنق، فيه التفاصيل والأسعار. وإذا حاب تحجز أو عندك أي استفسار، يسعدنا نخدمك.',
-      type: 'catering_document', documentKind: 'catering', topics: ['catering_document_request'], requiresHuman: false };
+    return approvedDocumentPlan({ catering: true, location: topics.includes('location') });
   }
-  if (topics.includes('menu_all')) {
-    return { reply: 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.',
-      type: 'document', topics: ['menu_all'], requiresHuman: false };
+  if (topics.some((topic) => topic === 'menu_all' || topic.startsWith('menu_'))) {
+    return approvedDocumentPlan({ menu: true, location: topics.includes('location') });
   }
   if (topics.includes('delivery')) return { reply: ANSWERS.delivery, topics: ['delivery'], requiresHuman: false };
   if (topics.includes('orders_contact')) return { reply: ANSWERS.orders_contact, topics: ['orders_contact'], requiresHuman: false };

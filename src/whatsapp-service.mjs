@@ -226,12 +226,18 @@ export class WhatsAppService {
       await this.store.setOutcome(event.id, 'automation_disabled');
       return 'automation_disabled';
     }
-    const isCateringDocument = plan.type === 'catering_document';
-    const isAnyDocument = isCateringDocument || plan.type === 'document';
-    const documentEnabled = isCateringDocument ? this.cateringDocumentEnabled : this.menuDocumentEnabled;
-    const documentUrl = isCateringDocument ? this.cateringDocumentUrl : this.menuDocumentUrl;
-    if (isAnyDocument && !documentEnabled) {
-      const outcome = isCateringDocument ? 'catering_document_pending_approval' : 'menu_document_pending_approval';
+    const documentKinds = plan.type === 'documents' ? plan.documentKinds || []
+      : plan.type === 'catering_document' ? ['catering']
+        : plan.type === 'document' ? ['menu'] : [];
+    const sendsMenuDocument = documentKinds.includes('menu');
+    const sendsCateringDocument = documentKinds.includes('catering');
+    if (sendsMenuDocument && !this.menuDocumentEnabled) {
+      const outcome = 'menu_document_pending_approval';
+      await this.store.setOutcome(event.id, outcome);
+      return outcome;
+    }
+    if (sendsCateringDocument && !this.cateringDocumentEnabled) {
+      const outcome = 'catering_document_pending_approval';
       await this.store.setOutcome(event.id, outcome);
       return outcome;
     }
@@ -265,9 +271,26 @@ export class WhatsAppService {
     try {
       // A reserved send is never automatically retried. A timeout after Meta
       // accepts the request is ambiguous and retrying could duplicate a reply.
-      if (isCateringDocument) {
+      if (sendsMenuDocument) {
         try {
-          await this.client.sendText({ to: event.sender, text: plan.reply, customerMessageAt: event.at, now: this.now() });
+          if (!this.menuDocumentUrl || typeof this.client.sendDocument !== 'function') throw new Error('Document transport unavailable');
+          await this.client.sendDocument({ to: event.sender, link: this.menuDocumentUrl,
+            caption: plan.menuCaption || plan.reply, filename: 'منيو موزارو.pdf', customerMessageAt: event.at, now: this.now() });
+        } catch (error) {
+          console.error(JSON.stringify({ service: 'whatsapp-automation', outcome: 'menu_document_failed',
+            status: error.status ?? null, code: error.code ?? null }));
+          await this.store.claimHumanHandoff(conversationId, 'menu_document_failed');
+          await this.client.sendText({ to: event.sender,
+            text: 'عذرًا، تعذّر إرسال المنيو الآن. إذا تبي، أوصلك بأحد الفريق يساعدك.',
+            customerMessageAt: event.at, now: this.now() });
+          await this.store.setOutcome(event.id, 'menu_document_fallback_sent');
+          return 'menu_document_fallback_sent';
+        }
+      }
+      if (sendsCateringDocument) {
+        try {
+          await this.client.sendText({ to: event.sender, text: plan.cateringMessage || plan.reply,
+            customerMessageAt: event.at, now: this.now() });
         } catch (error) {
           await this.store.claimHumanHandoff(conversationId, 'catering_intro_failed');
           await this.store.setOutcome(event.id, 'catering_intro_uncertain');
@@ -276,8 +299,8 @@ export class WhatsAppService {
           return 'catering_intro_uncertain';
         }
         try {
-          if (!documentUrl || typeof this.client.sendDocument !== 'function') throw new Error('Document transport unavailable');
-          await this.client.sendDocument({ to: event.sender, link: documentUrl, filename: 'كيترنق موزارو.pdf',
+          if (!this.cateringDocumentUrl || typeof this.client.sendDocument !== 'function') throw new Error('Document transport unavailable');
+          await this.client.sendDocument({ to: event.sender, link: this.cateringDocumentUrl, filename: 'كيترنق موزارو.pdf',
             customerMessageAt: event.at, now: this.now() });
         } catch (error) {
           console.error(JSON.stringify({ service: 'whatsapp-automation', outcome: 'catering_document_failed',
@@ -289,22 +312,8 @@ export class WhatsAppService {
           await this.store.setOutcome(event.id, 'catering_document_fallback_sent');
           return 'catering_document_fallback_sent';
         }
-      } else if (plan.type === 'document') {
-        try {
-          if (!documentUrl || typeof this.client.sendDocument !== 'function') throw new Error('Document transport unavailable');
-          await this.client.sendDocument({ to: event.sender, link: documentUrl,
-            caption: plan.reply, filename: 'منيو موزارو.pdf', customerMessageAt: event.at, now: this.now() });
-        } catch (error) {
-          console.error(JSON.stringify({ service: 'whatsapp-automation', outcome: 'menu_document_failed',
-            status: error.status ?? null, code: error.code ?? null }));
-          await this.store.claimHumanHandoff(conversationId, 'menu_document_failed');
-          await this.client.sendText({ to: event.sender,
-            text: 'عذرًا، تعذّر إرسال المنيو الآن. إذا تبي، أوصلك بأحد الفريق يساعدك.',
-            customerMessageAt: event.at, now: this.now() });
-          await this.store.setOutcome(event.id, 'menu_document_fallback_sent');
-          return 'menu_document_fallback_sent';
-        }
-      } else {
+      }
+      if (!documentKinds.length) {
         await this.client.sendText({ to: event.sender, text: plan.reply, customerMessageAt: event.at, now: this.now() });
       }
       if (this.aiClient?.enabled && event.text.trim()) await this.store.appendAiContext?.(conversationId, event.text, plan.reply);

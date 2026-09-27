@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 import { planWhatsAppReply, isOpenInRiyadh, renderApprovedTopics } from '../src/whatsapp-faq.mjs';
 import { WhatsAppClient, MockWhatsAppClient } from '../src/whatsapp-client.mjs';
+import { KapsoClient } from '../src/kapso-client.mjs';
 import { WhatsAppService, extractWhatsAppEvents } from '../src/whatsapp-service.mjs';
 import { ClaudeClient } from '../src/claude-client.mjs';
 import { createWebhookServer, selfTestWhatsAppChallenge } from '../src/webhook-server.mjs';
@@ -282,43 +283,47 @@ test('menu names and SAR prices exactly match the supplied official PDF', () => 
   assert.equal(MOZZARO_KNOWLEDGE.menuItems.find(({ id }) => id === 'pizza_month').priceSar, null);
 });
 
-test('menu FAQ understands Arabic and English item names, categories, and routes unknown details', () => {
-  assert.equal(planWhatsAppReply('كم سعر بيتزا المارجريتا؟').reply, 'مارجريتا: 29 ريال.');
-  assert.equal(planWhatsAppReply('How much is Truffle Rigatoni?').reply, 'ريغاتوني ترافل: 34 ريال.');
-  assert.match(planWhatsAppReply('كم أسعار البيتزا؟').reply, /بوراتا 43 ريال/);
-  assert.match(planWhatsAppReply('وش عندكم من صوصات ومشروبات؟').reply, /زيت زيتون حار 4 ريال/);
-  assert.equal(planWhatsAppReply('وش أسعار المنيو كامل؟').type, 'document');
-  assert.equal(planWhatsAppReply('كم سعر تيركي بيستو؟').reply, 'تيركي بيستو: 24 ريال.');
-  assert.match(planWhatsAppReply('وش عندكم فوكاتشا؟').reply, /تيركي بيستو 24 ريال/);
-  assert.match(planWhatsAppReply('كم أسعار خبز الفوكاتشا؟').reply, /خبزة الفوكاتشا 7 ريال/);
-  assert.equal(planWhatsAppReply('كم سعر بوراتا؟').silent, true);
-  for (const question of ['كم سعر تيركي بيستو؟', 'وش عندكم فوكاتشا؟', 'كم أسعار خبز الفوكاتشا؟', 'كم باقة 20 شخص؟']) {
-    assert.doesNotMatch(planWhatsAppReply(question).reply, /[A-Za-z]/);
+test('menu and price questions deterministically request the official PDF', () => {
+  for (const question of ['كم سعر بيتزا المارجريتا؟', 'How much is Truffle Rigatoni?', 'كم أسعار البيتزا؟',
+    'وش عندكم من صوصات ومشروبات؟', 'ممكن منيو البيتزا لو سمحت', 'كم الباستا والبيتزا',
+    'بكم المارجريتا', 'أبي المنيو']) {
+    const plan = planWhatsAppReply(question);
+    assert.equal(plan.type, 'document', question);
+    assert.deepEqual(plan.documentKinds, ['menu'], question);
+    assert.equal(plan.reply, 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.', question);
+    assert.equal(plan.deterministic, true, question);
   }
+  assert.equal(planWhatsAppReply('وش أسعار المنيو كامل؟').type, 'document');
+  assert.equal(planWhatsAppReply('كم سعر تيركي بيستو؟').type, 'document');
+  assert.equal(planWhatsAppReply('وش عندكم فوكاتشا؟').type, 'document');
+  assert.equal(planWhatsAppReply('كم أسعار خبز الفوكاتشا؟').type, 'document');
+  assert.equal(planWhatsAppReply('كم سعر بوراتا؟').type, 'document');
   const month = planWhatsAppReply('كم سعر بيتزا الشهر؟');
-  assert.equal(month.silent, true);
-  assert.equal(month.reply, null);
+  assert.equal(month.type, 'document');
   assert.equal(planWhatsAppReply('هل بيتزا المارجريتا متوفرة الآن؟').silent, true);
   assert.equal(planWhatsAppReply('هل فيها مكسرات؟').silent, true);
 });
 
-test('Claude allowlisted menu topics render only exact reviewed menu facts', () => {
+test('Claude menu topics can only resolve to the official menu PDF action', () => {
   assert.equal(MOZZARO_AI_TOPICS.includes('menu_pizza_margherita'), true);
-  assert.equal(renderApprovedTopics(['menu_pizza_margherita']).reply, 'مارجريتا: 29 ريال.');
-  assert.match(renderApprovedTopics(['menu_sauces']).reply, /عسل حار 4 ريال.*زيت زيتون حار 4 ريال.*زيت الترفل 4 ريال/);
+  assert.equal(renderApprovedTopics(['menu_pizza_margherita']).type, 'document');
+  assert.equal(renderApprovedTopics(['menu_sauces']).type, 'document');
   assert.equal(renderApprovedTopics(['menu_all']).type, 'document');
-  assert.equal(renderApprovedTopics(['menu_pizza_month']), null);
+  assert.equal(renderApprovedTopics(['menu_pizza_month']).type, 'document');
   assert.equal(renderApprovedTopics(['menu_unverified_item']), null);
 });
 
 test('Claude menu topic flows through Render approved copy without free-form generation', async () => {
-  const store = new MemoryStore(), client = new MockWhatsAppClient();
+  const store = new MemoryStore(), sent = [];
+  const client = { sendDocument: async (message) => { sent.push(message); }, sendText: async () => { throw new Error('unexpected text'); } };
   const aiClient = { enabled: true, inputUsdPerMillion: 1, outputUsdPerMillion: 5,
     estimateUsd: () => 0.001, answer: async () => ({ action: 'answer', topics: ['menu_pasta_truffle_rigatoni'], inputTokens: 8, outputTokens: 4 }) };
   const service = new WhatsAppService({ store, client, aiClient, aiMonthlyLimitUsd: 5, knowledge: MOZZARO_KNOWLEDGE,
-    phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+    phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowlist: ['966500000001'],
+    menuDocumentEnabled: true, menuDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf', now: () => now });
   assert.deepEqual((await service.process(sample('كم سعر ترافل ريغاتوني؟', 'ai-menu'))).outcomes, { sent: 1 });
-  assert.equal(client.sent[0].text, 'ريغاتوني ترافل: 34 ريال.');
+  assert.equal(sent[0].filename, 'منيو موزارو.pdf');
+  assert.equal(sent[0].caption, 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.');
 });
 
 test('official menu PDF is served unchanged over HTTPS-ready route', async (t) => {
@@ -401,6 +406,73 @@ test('catering document stays gated, then sends exact Arabic intro and distinct 
   blocked.entry[0].changes[0].value.messages[0].from = '966512345678';
   assert.deepEqual((await allowed.process(blocked)).outcomes, { allowlist_blocked: 1 });
   assert.equal(sent.length, 2);
+});
+
+test('production routing sends real Kapso documents for menu and catering while preserving location and silence', async () => {
+  const payloads = [];
+  const kapso = new KapsoClient({ apiKey: 'test-key', phoneNumberId: phoneId, enabled: true,
+    fetchImpl: async (_url, options) => {
+      payloads.push(JSON.parse(options.body));
+      return { ok: true, status: 200, json: async () => ({ messages: [{ id: `kapso-${payloads.length}` }] }) };
+    } });
+  const store = new MemoryStore();
+  let aiCalls = 0;
+  const aiClient = { enabled: true, inputUsdPerMillion: 1, outputUsdPerMillion: 1, estimateUsd: () => 0.001,
+    answer: async () => { aiCalls++; return { action: 'answer', topics: ['hours'], inputTokens: 2, outputTokens: 2 }; } };
+  const service = new WhatsAppService({ store, client: kapso, aiClient, aiMonthlyLimitUsd: 5, knowledge: MOZZARO_KNOWLEDGE,
+    phoneNumberId: phoneId, enabled: true, coexistenceVerified: true, allowAll: true,
+    menuDocumentEnabled: true, menuDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf',
+    cateringDocumentEnabled: true, cateringDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/catering/mozzaro-catering.pdf',
+    now: () => now });
+
+  for (const [index, question] of ['ممكن منيو البيتزا لو سمحت', 'كم الباستا والبيتزا', 'بكم المارجريتا', 'أبي المنيو'].entries()) {
+    const before = payloads.length;
+    assert.deepEqual((await service.process(sample(question, `regression-menu-${index}`))).outcomes, { sent: 1 });
+    assert.equal(payloads.length, before + 1, question);
+    assert.equal(payloads.at(-1).type, 'document', question);
+    assert.equal(payloads.at(-1).document.filename, 'منيو موزارو.pdf', question);
+    assert.equal(payloads.at(-1).document.link, 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf', question);
+    assert.equal(payloads.at(-1).document.caption, 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.', question);
+  }
+  assert.equal(aiCalls, 0);
+
+  let before = payloads.length;
+  assert.deepEqual((await service.process(sample('عندكم كيترنق؟', 'regression-catering'))).outcomes, { sent: 1 });
+  assert.equal(payloads.length, before + 2);
+  assert.equal(payloads.at(-2).type, 'text');
+  assert.equal(payloads.at(-1).type, 'document');
+  assert.equal(payloads.at(-1).document.filename, 'كيترنق موزارو.pdf');
+  assert.equal(payloads.at(-1).document.link, 'https://mozzaro-instagram-faq-bot.onrender.com/catering/mozzaro-catering.pdf');
+
+  before = payloads.length;
+  assert.deepEqual((await service.process(sample('أرسل اللوكيشن', 'regression-location'))).outcomes, { sent: 1 });
+  assert.equal(payloads.length, before + 1);
+  assert.equal(payloads.at(-1).type, 'text');
+  assert.equal(payloads.at(-1).text.body, MOZZARO_KNOWLEDGE.locationText);
+
+  before = payloads.length;
+  assert.deepEqual((await service.process(sample('أبي المنيو والموقع', 'regression-menu-location'))).outcomes, { sent: 1 });
+  assert.equal(payloads.length, before + 1);
+  assert.equal(payloads.at(-1).type, 'document');
+  assert.equal(payloads.at(-1).document.filename, 'منيو موزارو.pdf');
+  assert.match(payloads.at(-1).document.caption, /maps\.app\.goo\.gl\/q2d6CjWvMAnaF7xx9\?g_st=ic/);
+
+  before = payloads.length;
+  assert.deepEqual((await service.process(sample('أبي المنيو والكيترنق', 'regression-both-documents'))).outcomes, { sent: 1 });
+  assert.equal(payloads.length, before + 3);
+  assert.deepEqual(payloads.slice(before).map((payload) => payload.type), ['document', 'text', 'document']);
+  assert.deepEqual(payloads.slice(before).filter((payload) => payload.type === 'document')
+    .map((payload) => payload.document.filename), ['منيو موزارو.pdf', 'كيترنق موزارو.pdf']);
+
+  before = payloads.length;
+  assert.deepEqual((await service.process(sample('تمام', 'regression-ack'))).outcomes, { silent_no_reply: 1 });
+  assert.equal(payloads.length, before);
+  assert.notEqual((await store.getConversation(store.conversationId(phoneId, '966500000001')))?.human_active, true);
+
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'regression-followup'))).outcomes, { sent: 1 });
+  assert.equal(aiCalls, 1);
+  assert.equal(payloads.at(-1).type, 'text');
+  assert.match(payloads.at(-1).text.body, /12 الظهر إلى 3 الفجر/);
 });
 
 test('failed catering document delivery hands off and uses a short Arabic fallback without retrying', async () => {
