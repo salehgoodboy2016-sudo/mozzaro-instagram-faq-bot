@@ -66,6 +66,19 @@ const MENU_ALIASES = Object.freeze({
 
 const includes = (text, terms) => terms.some((term) => text.includes(normalizeArabic(term)));
 
+const CONVERSATION_ENDINGS = new Set([
+  'تمام', 'طيب', 'اوكي', 'شكرا', 'شكرا لكم', 'يعطيكم العافيه', 'ما قصرتوا', 'خلاص',
+  'تمام شكرا', 'طيب شكرا', 'الله يعطيكم العافيه',
+].map(normalizeArabic));
+
+function isConversationEnding(text) {
+  return CONVERSATION_ENDINGS.has(text);
+}
+
+function silentPlan(reason = 'unknown_question', extra = {}) {
+  return { reply: null, topics: [], requiresHuman: false, reason, silent: true, ...extra };
+}
+
 function menuTopicsFor(text) {
   const topics = [];
   const pastaAsked = includes(text, ['باستا', 'مكرونه', 'pasta', 'rigatoni', 'casarecce']);
@@ -241,7 +254,7 @@ function isCustomCateringRequest(text) {
     'تخصيص المناسبة', 'تغيير عدد الأصناف', 'تغيير عدد الاصناف', 'زيادة عدد الأصناف', 'زيادة عدد الاصناف',
       'السعر النهائي', 'سعر نهائي', 'التسعيرة النهائية', 'عرض سعر', 'quote', 'custom quote', 'booking confirmation',
       'ترتيبات الحفل', 'ترتيب الحفل', 'تنظيم الحفل', 'تجهيز المناسبة', 'ترتيبات المناسبة', 'تنظيم المناسبة',
-      'متطلبات خاصة', 'طلبات خاصة', 'تفاصيل خاصة', 'عاملات', 'موظفات للكيترنق', 'الطاقم نسائي',
+      'ترتيبات خاصة', 'متطلبات خاصة', 'طلبات خاصة', 'تفاصيل خاصة', 'عاملات', 'موظفات للكيترنق', 'الطاقم نسائي',
       'special requirements', 'event arrangements', 'custom order', 'عيد ميلاد', 'يوم ميلاد', 'birthday'])
     || (includes(text, ['عيد ميلاد', 'يوم ميلاد', 'birthday']) && includes(text, ['ابي', 'أبي', 'ابغى', 'أبغى', 'نبي', 'احجز']));
 }
@@ -255,8 +268,8 @@ export function isOpenInRiyadh(now = new Date()) {
 
 export function planWhatsAppReply(rawText, now = new Date()) {
   const text = normalizeArabic(rawText);
-  if (!text) return { reply: 'عذرًا، ما قدرت أقرأ الرسالة. اكتب استفسارك نصًا وبساعدك.', topics: [],
-    requiresHuman: false, reason: 'unsupported_content' };
+  if (!text) return silentPlan('unsupported_content');
+  if (isConversationEnding(text)) return silentPlan('acknowledgment');
 
   const islamicGreeting = includes(text, ['السلام عليكم', 'سلام عليكم']);
   const casualGreeting = !islamicGreeting && includes(text, ['هلا', 'اهلا', 'أهلا', 'مرحبا', 'يا هلا']);
@@ -274,7 +287,7 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     'متى تفتح', 'متى تقفل', 'hours', 'open', 'closing']);
 
   const cateringContext = isCateringQuestion(text);
-  if (cateringContext && isCustomCateringRequest(text)) {
+  if (isCustomCateringRequest(text)) {
     return { reply: null, topics: [], requiresHuman: true, reason: 'human_request' };
   }
   if (cateringContext) {
@@ -292,20 +305,18 @@ export function planWhatsAppReply(rawText, now = new Date()) {
   const topics = [];
   const cateringTopics = cateringTopicsFor(text);
   if (cateringTopics.length) topics.push(...cateringTopics);
-  else if (cateringContext) return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
+  else if (cateringContext) return silentPlan();
   const menuTopics = cateringContext || asksHours ? [] : menuTopicsFor(text);
   if (menuTopics.includes('menu_pizza_burrata') && !includes(text,
     ['بيتزا', 'فوكاتشا', 'ساندويتش', 'ساندوتش', 'pizza', 'focaccia', 'sandwich'])) {
-    return { reply: 'تقصد بيتزا البوراتا أو ساندويتش الفوكاتشا بالبوراتا؟ بنحوّل استفسارك للفريق يساعدك.',
-      topics: [], requiresHuman: true, reason: 'unknown_question', ambiguity: true };
+    return silentPlan('unknown_question', { ambiguity: true });
   }
   if (menuTopics.length && isMenuAvailabilityQuestion(text, menuTopics)) {
-    return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
+    return silentPlan();
   }
   if (menuTopics.includes('menu_pizza_month') || menuTopics.includes('menu_pizza')) {
     if (includes(text, MENU_ALIASES.pizza_month)) {
-      return { reply: 'بيتزا الشهر ما لها سعر ثابت بالقائمة. بنحوّل استفسارك للفريق لمعرفة التفاصيل الحالية.',
-        topics: [], requiresHuman: true, reason: 'unknown_question' };
+      return silentPlan();
     }
   }
   if (menuTopics.includes('menu_all')) {
@@ -323,7 +334,7 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     if (greeting && includes(text, ['السلام عليكم', 'سلام عليكم', 'هلا', 'اهلا', 'مرحبا', 'يا هلا']) && text.split(' ').length <= 3) {
       return { reply: greeting, topics: ['greeting'], requiresHuman: false };
     }
-    return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
+    return silentPlan();
   }
 
   const parts = greeting ? [greeting] : [];
@@ -331,7 +342,7 @@ export function planWhatsAppReply(rawText, now = new Date()) {
     if (topic.startsWith('catering_')) {
       const cateringAnswer = renderCateringTopic(topic);
       if (cateringAnswer) parts.push(cateringAnswer);
-      else return { reply: MOZZARO_KNOWLEDGE.unknownHandoffText, topics: [], requiresHuman: true, reason: 'unknown_question' };
+      else return silentPlan();
       continue;
     }
     if (topic.startsWith('menu_')) {

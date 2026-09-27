@@ -127,6 +127,10 @@ export class WhatsAppService {
     await this.store.recordCustomerActivity(conversationId, event.at);
     if (conversation?.human_active) {
       const pendingPlan = planWhatsAppReply(event.text, this.now());
+      if (pendingPlan.silent && ['acknowledgment', 'unsupported_content'].includes(pendingPlan.reason)) {
+        await this.store.setOutcome(event.id, 'silent_no_reply');
+        return 'silent_no_reply';
+      }
       const queued = await this.store.queuePendingMessage({ ...event, conversationId }, pendingPlan);
       if (queued) {
         if (pendingPlan.requiresHuman) console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'protected', reason: pendingPlan.reason }));
@@ -149,6 +153,10 @@ export class WhatsAppService {
       if ((await this.store.getConversation(conversationId))?.human_active) return 'human_active_pending';
     }
     let plan = planWhatsAppReply(event.text, this.now());
+    if (plan.silent && ['acknowledgment', 'unsupported_content'].includes(plan.reason)) {
+      await this.store.setOutcome(event.id, 'silent_no_reply');
+      return 'silent_no_reply';
+    }
     let aiContext = [];
     if (this.enabled && this.aiClient?.enabled && event.text.trim() && !['document', 'catering_document'].includes(plan.type) && !plan.ambiguity
       && (!plan.requiresHuman || plan.reason === 'unknown_question') && this.knowledge) {
@@ -175,17 +183,24 @@ export class WhatsAppService {
             await this.store.setOutcome(event.id, 'human_required');
             return 'human_required';
           }
+          if (ai.action === 'silent') {
+            await this.store.setOutcome(event.id, 'silent_no_reply');
+            return 'silent_no_reply';
+          }
           const approvedPlan = renderApprovedTopics(ai.topics, this.now());
           if (!approvedPlan) {
-            await this.store.claimHumanHandoff(conversationId, 'ai_no_verified_answer');
-            await this.store.setOutcome(event.id, 'human_required');
-            return 'human_required';
+            await this.store.setOutcome(event.id, 'silent_no_reply');
+            return 'silent_no_reply';
           }
           plan = approvedPlan;
         } catch (error) {
           console.error(JSON.stringify({ service: 'claude-assistant', outcome: 'unavailable', status: error.status ?? null, code: error.code ?? null }));
         }
       }
+    }
+    if (plan.silent) {
+      await this.store.setOutcome(event.id, 'silent_no_reply');
+      return 'silent_no_reply';
     }
     if (plan.requiresHuman) {
       const firstHandoff = await this.store.claimHumanHandoff(conversationId, plan.reason);

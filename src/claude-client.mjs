@@ -32,8 +32,9 @@ export class ClaudeClient {
       'ساعات موزارو يوميًا من 12 الظهر إلى 3 الفجر في اليوم التالي. لا توجد فترة صباحية ولا ساعات مختلفة للفوكاتشا أو أي فئة؛ جميع الأصناف ضمن ساعات العمل نفسها. استخدم موضوع hours لهذه الأسئلة.',
       'الطلب من الدرايف ثرو أو بالاتصال، والتوصيل داخل الأحساء عبر كيتا وهنقرستيشن حسب نطاق التغطية الظاهر في التطبيق فقط. لا تدّعِ وجود توصيل مباشر من المطعم ولا تذكر رسومًا أو أوقاتًا أو حدًا أدنى أو تغطية غير مؤكدة. استخدم delivery لسؤال التوصيل وorders لسؤال طريقة الطلب. لا تكرر رقم التواصل أثناء محادثة واتساب إلا إذا طلب العميل الرقم صراحةً، وعندها استخدم orders_contact.',
       'في الكيترنق، إجمالي الأصناف ثابت ويشمل أي بوراتا؛ البوراتا اختيارية ويمكن استبدالها ببيتزا عادية أو باستا ضمن نفس الإجمالي. البيتزا والباستا لهما بنية باقات وسعر ابتدائي واحد. الأسعار ابتدائية. الطاقم الحالي رجال فقط. عند أي موضوع عن الكيترنق اختر موضوع ملف الكيترنق؛ لا ترسل رقم هاتف في رد الكيترنق.',
-      'لسؤال العاملات أو الطاقم النسائي اختر catering_staff ليظهر أن الفريق الحالي رجال فقط ولا تتوفر عاملات حاليًا. لا تؤكد حجزًا أو توفر موعد. أحِل الحجز والتاريخ والتوفر والطلبات المخصصة والسعر النهائي والطلبات خارج المدينة والكمية غير القياسية للموظف. لا تجب عن التوفر الحالي أو المكونات أو مسببات الحساسية أو أي معلومة غير موجودة صراحة في قاعدة المعرفة. بيتزا الشهر بلا سعر ثابت؛ اختر handoff لطلب تفاصيلها الحالية. إذا كان السؤال غير مغطى بالكامل، أو كان شكوى أو استرجاعاً أو طلباً معقداً أو طلب موظف، اختر handoff.',
-      'لا تنشئ نص إجابة ولا تضف موضوعات. أعد JSON فقط: {"action":"answer"|"handoff","topics":["hours"]}. لا تذكر أنك نموذج ذكاء اصطناعي.',
+      'افهم الرسالة مع سياق المحادثة القريب. إذا كانت مجرد إقرار أو نهاية طبيعية مثل تمام أو طيب أو شكرًا بعد إجابة سابقة، اختر silent. وإذا كانت غامضة أو غير مغطاة بمعلومة معتمدة، اختر silent من دون اعتذار أو رسالة تحويل.',
+      'لسؤال العاملات أو الطاقم النسائي اختر catering_staff ليظهر أن الفريق الحالي رجال فقط ولا تتوفر عاملات حاليًا. لا تؤكد حجزًا أو توفر موعد. اختر handoff فقط للحجز والتاريخ والتوفر والطلبات المخصصة والسعر النهائي والطلبات خارج المدينة والكمية غير القياسية، أو الشكوى أو الاسترجاع أو طلب الموظف. لا تجب عن التوفر الحالي أو المكونات أو مسببات الحساسية أو أي معلومة غير موجودة صراحة في قاعدة المعرفة. بيتزا الشهر بلا سعر ثابت؛ اختر silent لطلب تفاصيلها الحالية.',
+      'لا تنشئ نص إجابة ولا تضف موضوعات. أعد JSON فقط: {"action":"answer"|"handoff"|"silent","topics":["hours"]}. استخدم قائمة موضوعات فارغة مع handoff أو silent. لا تذكر أنك نموذج ذكاء اصطناعي.',
       `قاعدة المعرفة المعتمدة: ${JSON.stringify(knowledge)}`,
     ].join('\n');
     const messages = [...context.slice(-6), { role: 'user', content: userText }];
@@ -52,9 +53,10 @@ export class ClaudeClient {
     const text = (body.content || []).filter((part) => part.type === 'text').map((part) => part.text).join('').trim();
     let result; try { result = JSON.parse(text); } catch { throw new Error('Claude returned invalid structured response'); }
     const allowedTopics = new Set(MOZZARO_AI_TOPICS);
-    if (!['answer', 'handoff'].includes(result.action) || !Array.isArray(result.topics)
+    if (!['answer', 'handoff', 'silent'].includes(result.action) || !Array.isArray(result.topics)
       || result.topics.some((topic) => !allowedTopics.has(topic)) || result.topics.length > 4
-      || (result.action === 'answer' && result.topics.length === 0)) {
+      || (result.action === 'answer' && result.topics.length === 0)
+      || (result.action !== 'answer' && result.topics.length !== 0)) {
       throw new Error('Claude returned invalid structured response');
     }
     return { action: result.action, topics: result.topics, inputTokens: Number(body.usage?.input_tokens || 0),

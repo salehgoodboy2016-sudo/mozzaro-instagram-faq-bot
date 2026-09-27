@@ -105,7 +105,6 @@ export const MOZZARO_KNOWLEDGE = Object.freeze({
   ],
   cateringCustomQuoteFactors: ['guest_count', 'location', 'service_duration', 'customization_type'],
   cateringStaffGenderText: 'الطاقم المتاح حاليًا للكيترنق رجال فقط، ولا تتوفر عاملات حاليًا.',
-  unknownHandoffText: 'شكرًا لتواصلك مع موزارو. بنحوّل استفسارك للفريق للمتابعة.',
 });
 
 export const MOZZARO_AI_TOPICS = Object.freeze([

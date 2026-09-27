@@ -139,14 +139,18 @@ test('ordering and delivery use approved Arabic wording and do not claim direct 
   assert.deepEqual(MOZZARO_KNOWLEDGE.orderChannels, ['drive_thru', 'phone', 'keeta', 'hungerstation']);
 });
 
-test('complaints and unknown questions require human attention and safe fallback', () => {
-  assert.equal(planWhatsAppReply('طلبي ناقص وتأخر').reason, 'complaint');
+test('complaints use internal handoff while unknown questions remain silent', () => {
+  const complaint = planWhatsAppReply('طلبي ناقص وتأخر');
+  assert.equal(complaint.reason, 'complaint');
+  assert.equal(complaint.reply, null);
+  assert.equal(complaint.requiresHuman, true);
   const unknown = planWhatsAppReply('هل عندكم خصومات اليوم؟');
-  assert.equal(unknown.requiresHuman, true);
-  assert.match(unknown.reply, /بنحوّل استفسارك للفريق/);
+  assert.equal(unknown.requiresHuman, false);
+  assert.equal(unknown.reply, null);
+  assert.equal(unknown.silent, true);
 });
 
-test('unsupported media gets a safe Arabic prompt, is audited, and does not trigger Claude or human handoff', async () => {
+test('unsupported media remains silent, is audited, and does not trigger Claude or human handoff', async () => {
   const store = new MemoryStore(), client = new MockWhatsAppClient();
   let aiCalls = 0;
   const aiClient = { enabled: true, estimateUsd: () => 1, answer: async () => { aiCalls++; throw new Error('should not run'); } };
@@ -154,13 +158,47 @@ test('unsupported media gets a safe Arabic prompt, is audited, and does not trig
     enabled: true, coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
   const sticker = { entry: [{ changes: [{ field: 'messages', value: { metadata: { phone_number_id: phoneId },
     messages: [{ id: 'wamid.sticker', from: '966500000001', timestamp: '1790190000', type: 'sticker', sticker: { id: 'media-id' } }] } }] }] };
-  assert.deepEqual((await service.process(sticker)).outcomes, { unsupported_content_replied: 1 });
-  assert.equal(client.sent.length, 1);
-  assert.equal(client.sent[0].text, 'عذرًا، ما قدرت أقرأ الرسالة. اكتب استفسارك نصًا وبساعدك.');
+  assert.deepEqual((await service.process(sticker)).outcomes, { silent_no_reply: 1 });
+  assert.equal(client.sent.length, 0);
   assert.equal(aiCalls, 0);
   const conversationId = store.conversationId(phoneId, '966500000001');
   assert.notEqual((await store.getConversation(conversationId))?.human_active, true);
-  assert.equal((await store.recent())[0].outcome, 'unsupported_content_replied');
+  assert.equal((await store.recent())[0].outcome, 'silent_no_reply');
+});
+
+test('menu acknowledgments stay silent and a later clear question receives a normal answer', async () => {
+  const store = new MemoryStore();
+  const sent = [];
+  const client = {
+    sendText: async (message) => { sent.push({ type: 'text', ...message }); },
+    sendDocument: async (message) => { sent.push({ type: 'document', ...message }); },
+  };
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowlist: ['966500000001'], menuDocumentEnabled: true,
+    menuDocumentUrl: 'https://example.test/menu.pdf', now: () => now });
+
+  assert.deepEqual((await service.process(sample('أرسل المنيو', 'natural-menu'))).outcomes, { sent: 1 });
+  assert.equal(sent.length, 1);
+  assert.deepEqual((await service.process(sample('تمام', 'natural-ack'))).outcomes, { silent_no_reply: 1 });
+  assert.deepEqual((await service.process(sample('شكراً', 'natural-thanks'))).outcomes, { silent_no_reply: 1 });
+  assert.equal(sent.length, 1);
+  const conversationId = store.conversationId(phoneId, '966500000001');
+  assert.notEqual((await store.getConversation(conversationId))?.human_active, true);
+
+  assert.deepEqual((await service.process(sample('متى تفتحون؟', 'natural-new-question'))).outcomes, { sent: 1 });
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /12 الظهر إلى 3 الفجر/);
+});
+
+test('protected requests activate internal handoff without announcing it to the customer', async () => {
+  for (const [text, id] of [['أبي أكلم موظف', 'internal-human'], ['طلبي ناقص وعندي شكوى', 'internal-complaint']]) {
+    const store = new MemoryStore(), client = new MockWhatsAppClient();
+    const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+      coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
+    assert.deepEqual((await service.process(sample(text, id))).outcomes, { human_required: 1 });
+    assert.equal(client.sent.length, 0);
+    assert.equal((await store.getConversation(store.conversationId(phoneId, '966500000001'))).human_active, true);
+  }
 });
 
 test('menu names and SAR prices exactly match the supplied official PDF', () => {
@@ -212,15 +250,15 @@ test('menu FAQ understands Arabic and English item names, categories, and routes
   assert.equal(planWhatsAppReply('كم سعر تيركي بيستو؟').reply, 'تيركي بيستو: 24 ريال.');
   assert.match(planWhatsAppReply('وش عندكم فوكاتشا؟').reply, /تيركي بيستو 24 ريال/);
   assert.match(planWhatsAppReply('كم أسعار خبز الفوكاتشا؟').reply, /خبزة الفوكاتشا 7 ريال/);
-  assert.equal(planWhatsAppReply('كم سعر بوراتا؟').requiresHuman, true);
+  assert.equal(planWhatsAppReply('كم سعر بوراتا؟').silent, true);
   for (const question of ['كم سعر تيركي بيستو؟', 'وش عندكم فوكاتشا؟', 'كم أسعار خبز الفوكاتشا؟', 'كم باقة 20 شخص؟']) {
     assert.doesNotMatch(planWhatsAppReply(question).reply, /[A-Za-z]/);
   }
   const month = planWhatsAppReply('كم سعر بيتزا الشهر؟');
-  assert.equal(month.requiresHuman, true);
-  assert.match(month.reply, /ما لها سعر ثابت/);
-  assert.equal(planWhatsAppReply('هل بيتزا المارجريتا متوفرة الآن؟').requiresHuman, true);
-  assert.equal(planWhatsAppReply('هل فيها مكسرات؟').requiresHuman, true);
+  assert.equal(month.silent, true);
+  assert.equal(month.reply, null);
+  assert.equal(planWhatsAppReply('هل بيتزا المارجريتا متوفرة الآن؟').silent, true);
+  assert.equal(planWhatsAppReply('هل فيها مكسرات؟').silent, true);
 });
 
 test('Claude allowlisted menu topics render only exact reviewed menu facts', () => {
@@ -405,7 +443,7 @@ test('Saudi Arabic and English catering questions use the official catering docu
 test('booking, quote, special arrangements, employee requests, complaints, and unsupported guest counts activate handoff', () => {
   for (const text of ['أبي أحجز كيترنق', 'أبي كيترنق عيد ميلاد', 'كم السعر النهائي لباقة Basic؟',
     'تجون خارج الأحساء؟', 'أبغى نكهات معينة وكمية مختلفة', 'عندي ترتيبات خاصة للفعالية',
-    'هل عندكم خيار غير موجود بالقائمة؟', 'أبي أكلم موظف بخصوص الكيترنق', 'عندي شكوى عن الكيترنق']) {
+    'أبي أكلم موظف بخصوص الكيترنق', 'عندي شكوى عن الكيترنق']) {
     assert.equal(planWhatsAppReply(text).requiresHuman, true, text);
   }
   assert.equal(planWhatsAppReply('عندي 60 شخص وش يناسبني؟').requiresHuman, true);
@@ -443,8 +481,19 @@ test('Claude adapter uses official Messages API shape and validates safe JSON ou
   assert.match(system, /حسب نطاق التغطية الظاهر في التطبيق فقط/);
   assert.match(system, /لا تدّعِ وجود توصيل مباشر/);
   assert.match(system, /لا تكرر رقم التواصل أثناء محادثة واتساب/);
+  assert.match(system, /اختر silent من دون اعتذار أو رسالة تحويل/);
   assert.deepEqual(result.topics, ['hours']);
   assert.equal(client.estimateUsd([{ role: 'user', content: 'هلا' }], 220, {}) > 0, true);
+});
+
+test('Claude can classify an acknowledgment or unclear message as silent', async () => {
+  const client = new ClaudeClient({ apiKey: 'secret', model: 'test-model', enabled: true,
+    fetchImpl: async () => ({ ok: true, json: async () => ({
+      content: [{ type: 'text', text: '{"action":"silent","topics":[]}' }], usage: { input_tokens: 5, output_tokens: 2 },
+    }) }) });
+  const result = await client.answer({ userText: 'تمام', context: [{ role: 'assistant', content: 'تم إرسال المنيو' }], knowledge: {} });
+  assert.equal(result.action, 'silent');
+  assert.deepEqual(result.topics, []);
 });
 
 test('Claude errors are surfaced without leaking provider content', async () => {
@@ -485,7 +534,7 @@ test('Claude is never called for a non-allowlisted customer or complaint', async
   assert.equal(calls, 0);
 });
 
-test('monthly Claude budget exhaustion falls back to approved FAQ and hands unknown questions to staff', async () => {
+test('monthly Claude budget exhaustion uses approved FAQ and leaves unknown questions silent', async () => {
   const store = new MemoryStore(); store.reserveAiBudget = async () => false;
   const client = new MockWhatsAppClient(); let calls = 0;
   const aiClient = { enabled: true, estimateUsd: () => 0.001, answer: async () => { calls++; } };
@@ -496,11 +545,10 @@ test('monthly Claude budget exhaustion falls back to approved FAQ and hands unkn
   assert.match(client.sent[0].text, /12 الظهر إلى 3 الفجر/);
   assert.notEqual(store.conversations.get(store.conversationId(phoneId, '966500000001'))?.human_active, true);
 
-  assert.deepEqual((await service.process(sample('هل عندكم خصومات اليوم؟', 'ai-budget-unknown'))).outcomes, { handoff_reply_sent: 1 });
+  assert.deepEqual((await service.process(sample('هل عندكم خصومات اليوم؟', 'ai-budget-unknown'))).outcomes, { silent_no_reply: 1 });
   assert.equal(calls, 0);
-  assert.equal(client.sent.length, 2);
-  assert.match(client.sent[1].text, /بنحوّل استفسارك للفريق/);
-  assert.equal(store.conversations.get(store.conversationId(phoneId, '966500000001')).human_active, true);
+  assert.equal(client.sent.length, 1);
+  assert.notEqual(store.conversations.get(store.conversationId(phoneId, '966500000001'))?.human_active, true);
 });
 
 test('Claude failure uses the approved FAQ response without fabricating a fallback', async () => {
@@ -608,13 +656,14 @@ test('human takeover suppresses replies and can be resumed', async () => {
   assert.equal(client.sent.length, 1);
 });
 
-test('unknown question gets one safe fallback and persistent handoff', async () => {
+test('unknown questions remain silent without activating handoff', async () => {
   const store = new MemoryStore(), client = new MockWhatsAppClient();
   const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
     coexistenceVerified: true, allowlist: ['966500000001'], now: () => now });
-  assert.deepEqual((await service.process(sample('هل عندكم خصومات اليوم؟', 'unknown-1'))).outcomes, { handoff_reply_sent: 1 });
-  assert.deepEqual((await service.process(sample('وش أسعاركم؟', 'unknown-2'))).outcomes, { human_active_pending: 1 });
-  assert.equal(client.sent.length, 1);
+  assert.deepEqual((await service.process(sample('هل عندكم خصومات اليوم؟', 'unknown-1'))).outcomes, { silent_no_reply: 1 });
+  assert.deepEqual((await service.process(sample('وش عندكم شي مميز؟', 'unknown-2'))).outcomes, { silent_no_reply: 1 });
+  assert.equal(client.sent.length, 0);
+  assert.notEqual((await store.getConversation(store.conversationId(phoneId, '966500000001')))?.human_active, true);
 });
 
 test('late customer event after employee activity does not receive a reply', async () => {
