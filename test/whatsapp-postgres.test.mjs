@@ -23,13 +23,21 @@ test('PostgreSQL migrations are repeatable and persist deduplication and handoff
 
   assert.equal(await store.recordEvent(event), true);
   assert.equal(await store.recordEvent(event), false);
+  const retryable = { ...event, id: 'incoming:retryable-before-send' };
+  assert.equal(await store.recordEvent(retryable), true);
+  assert.equal(await store.markProcessingFailed(retryable.id), true);
+  assert.equal(await store.recordEvent(retryable), true);
+  await store.setOutcome(retryable.id, 'send_reserved');
+  assert.equal(await store.markProcessingFailed(retryable.id), false);
+  assert.equal(await store.recordEvent(retryable), false);
   await store.setHuman(conversationId, true, 'employee_takeover');
 
   const secondStore = new WhatsAppStore({ pool, identityKey: 'integration-test-key' });
   const persisted = await secondStore.getConversation(conversationId);
   assert.equal(persisted.human_active, true);
   assert.equal(persisted.handoff_reason, 'employee_takeover');
-  assert.equal((await secondStore.recent(10))[0].outcome, 'received');
+  assert.equal((await secondStore.recent(10)).find((row) => row.conversation_id === conversationId
+    && row.event_type === 'incoming' && row.outcome === 'received')?.outcome, 'received');
   assert.deepEqual(await secondStore.verifyPersistence(), { deduplication: true, humanHandoff: true });
   assert.equal((await secondStore.getConversation(
     secondStore.conversationId('system', 'storage-self-test-v1'),

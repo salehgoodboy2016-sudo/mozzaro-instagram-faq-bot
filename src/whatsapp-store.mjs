@@ -27,6 +27,21 @@ export class WhatsAppStore {
        VALUES ($1, $2, $3, 'received', $4) ON CONFLICT DO NOTHING`,
       [id, conversationId, type, at],
     );
+    if (result.rowCount === 1) return true;
+    // Kapso retries non-2xx webhook deliveries. An earlier attempt may have
+    // persisted the event and then failed before reserving any outbound send.
+    // Reclaim only that explicitly retryable state; terminal and send-reserved
+    // outcomes remain immutable so a retry can never duplicate a reply.
+    const reclaimed = await this.pool.query(`UPDATE whatsapp_events SET
+      outcome='received',updated_at=now() WHERE event_id=$1 AND outcome='processing_failed'
+      RETURNING event_id`, [id]);
+    return reclaimed.rowCount === 1;
+  }
+
+  async markProcessingFailed(id) {
+    const result = await this.pool.query(`UPDATE whatsapp_events SET
+      outcome='processing_failed',updated_at=now() WHERE event_id=$1 AND outcome='received'
+      RETURNING event_id`, [id]);
     return result.rowCount === 1;
   }
 

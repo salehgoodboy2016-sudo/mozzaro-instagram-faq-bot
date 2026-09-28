@@ -22,8 +22,18 @@ class MemoryStore {
   constructor() { this.events = new Map(); this.conversations = new Map(); }
   conversationId(phone, sender) { return createHmac('sha256', 'test-key').update(`${phone}:${sender}`).digest('hex'); }
   async recordEvent({ id, conversationId, type, at }) {
-    if (this.events.has(id)) return false;
+    if (this.events.has(id)) {
+      const existing = this.events.get(id);
+      if (existing.outcome !== 'processing_failed') return false;
+      existing.outcome = 'received';
+      return true;
+    }
     this.events.set(id, { conversationId, type, at, outcome: 'received' }); return true;
+  }
+  async markProcessingFailed(id) {
+    const event = this.events.get(id);
+    if (!event || event.outcome !== 'received') return false;
+    event.outcome = 'processing_failed'; return true;
   }
   async setOutcome(id, outcome) { this.events.get(id).outcome = outcome; }
   async getConversation(id) { return this.conversations.get(id) || null; }
@@ -473,6 +483,62 @@ test('production routing sends real Kapso documents for menu and catering while 
   assert.equal(aiCalls, 1);
   assert.equal(payloads.at(-1).type, 'text');
   assert.match(payloads.at(-1).text.body, /12 الظهر إلى 3 الفجر/);
+});
+
+test('all-customer menu routing accepts Saudi and non-Saudi senders and sends actual Kapso documents', async () => {
+  const payloads = [];
+  const kapso = new KapsoClient({ apiKey: 'test-key', phoneNumberId: phoneId, enabled: true,
+    fetchImpl: async (_url, options) => {
+      payloads.push(JSON.parse(options.body));
+      return { ok: true, status: 200, json: async () => ({ messages: [{ id: `kapso-${payloads.length}` }] }) };
+    } });
+  const service = new WhatsAppService({ store: new MemoryStore(), client: kapso, phoneNumberId: phoneId,
+    enabled: true, coexistenceVerified: true, allowAll: true, menuDocumentEnabled: true,
+    menuDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf', now: () => now });
+
+  const cases = [
+    ['966545383080', 'ممكن المنيو'],
+    ['963995498820', 'ابي المنيو'],
+    ['971501234567', 'المنيو لو سمحت'],
+  ];
+  for (const [index, [sender, text]] of cases.entries()) {
+    assert.deepEqual((await service.process(sample(text, `international-menu-${index}`, '1790190000', sender))).outcomes,
+      { sent: 1 }, `${sender}: ${text}`);
+    const outbound = payloads.at(-1);
+    assert.equal(outbound.to, sender);
+    assert.equal(outbound.type, 'document');
+    assert.equal(outbound.document.filename, 'منيو موزارو.pdf');
+    assert.equal(outbound.document.link, 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf');
+  }
+});
+
+test('a pre-send processing failure is safely retried, while a reserved send is never reclaimed', async () => {
+  const store = new MemoryStore();
+  let conversationReads = 0;
+  store.getConversation = async (id) => {
+    conversationReads++;
+    if (conversationReads === 1) throw new Error('temporary database read failure');
+    return store.conversations.get(id) || null;
+  };
+  const sent = [];
+  const client = { sendDocument: async (message) => { sent.push(message); }, sendText: async () => {} };
+  const service = new WhatsAppService({ store, client, phoneNumberId: phoneId, enabled: true,
+    coexistenceVerified: true, allowAll: true, menuDocumentEnabled: true,
+    menuDocumentUrl: 'https://mozzaro-instagram-faq-bot.onrender.com/menu/mozzaro.pdf', now: () => now });
+  const event = sample('ممكن المنيو', 'kapso-retry-safe', '1790190000', '966545383080');
+
+  await assert.rejects(service.process(event), /temporary database read failure/);
+  assert.equal(store.events.get('incoming:kapso-retry-safe').outcome, 'processing_failed');
+  assert.deepEqual((await service.process(event)).outcomes, { sent: 1 });
+  assert.equal(sent.length, 1);
+  assert.deepEqual((await service.process(event)).outcomes, { duplicate: 1 });
+  assert.equal(sent.length, 1);
+
+  const reservedId = 'incoming:already-reserved';
+  store.events.set(reservedId, { outcome: 'send_reserved' });
+  assert.equal(await store.markProcessingFailed(reservedId), false);
+  assert.equal(await store.recordEvent({ id: reservedId, conversationId: 'x', type: 'incoming', at: now }), false);
+  assert.equal(store.events.get(reservedId).outcome, 'send_reserved');
 });
 
 test('failed catering document delivery hands off and uses a short Arabic fallback without retrying', async () => {

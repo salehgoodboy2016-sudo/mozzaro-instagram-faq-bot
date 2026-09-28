@@ -72,9 +72,17 @@ export class WhatsAppService {
   async processEvents(events) {
     const outcomes = {};
     for (const event of events) {
-      const outcome = await this.processEvent(event, { persisted: event.pending === true });
-      if (event.pending) await this.store.completePendingMessage(event.id, outcome);
-      outcomes[outcome] = (outcomes[outcome] || 0) + 1;
+      try {
+        const outcome = await this.processEvent(event, { persisted: event.pending === true });
+        if (event.pending) await this.store.completePendingMessage(event.id, outcome);
+        outcomes[outcome] = (outcomes[outcome] || 0) + 1;
+      } catch (error) {
+        // Only an event still in the initial received state is made retryable.
+        // Once a send is reserved, an ambiguous failure must stay terminal to
+        // avoid a duplicate customer-facing message on Kapso redelivery.
+        await this.store?.markProcessingFailed?.(event.id).catch(() => {});
+        throw error;
+      }
     }
     return { count: events.length, outcomes };
   }
