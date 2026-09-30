@@ -120,6 +120,8 @@ export async function handleCampaignApi({ req, res, store, kapsoClient, business
     }
     json(res, 404, { error: 'Not found' });
   } catch (error) {
+    console.error(JSON.stringify({ service: 'marketing-campaigns', outcome: 'operation_failed', pathname,
+      code: error.code ?? null, constraint: error.constraint ?? null }));
     const safe = ['Invalid', 'Missing', 'Only', 'Empty', 'Malformed', 'Approved', 'Campaign', 'Kapso']
       .some((prefix) => error.message.startsWith(prefix)) ? error.message : 'Operation failed';
     json(res, 400, { error: safe, code: error.code ?? null });

@@ -230,15 +230,17 @@ export class MarketingStore {
         WHERE c.consent_status='opted_in' AND s.phone_e164 IS NULL
         ORDER BY p.campaign_selection_rank ASC NULLS LAST,p.visits DESC NULLS LAST,
           p.last_visit DESC NULLS LAST,p.bonat_row_order ASC NULLS LAST,c.contact_id ASC`);
-      for (const contact of eligible.rows) {
-        const consent = await client.query(`SELECT consent_event_id FROM marketing_consent_events
-          WHERE contact_id=$1 AND consent_status='opted_in'
-          ORDER BY occurred_at DESC,recorded_at DESC LIMIT 1`, [contact.contact_id]);
-        if (consent.rowCount) await client.query(`INSERT INTO marketing_campaign_recipients
-          (campaign_id,contact_id,consent_event_id,estimated_cost_usd,selection_rank) VALUES ($1,$2,$3,$4,$5)`,
-        [campaignId, contact.contact_id, consent.rows[0].consent_event_id, this.rateUsd,
-          contact.campaign_selection_rank]);
+      const consentRows = await client.query(`SELECT contact_id,consent_event_id FROM marketing_consent_events
+        WHERE consent_status='opted_in' ORDER BY contact_id,occurred_at DESC,recorded_at DESC`);
+      const latestConsent = new Map();
+      for (const row of consentRows.rows) if (!latestConsent.has(row.contact_id)) {
+        latestConsent.set(row.contact_id, row.consent_event_id);
       }
+      await insertBatch(client, `INSERT INTO marketing_campaign_recipients
+        (campaign_id,contact_id,consent_event_id,estimated_cost_usd,selection_rank)`, eligible.rows
+        .filter((contact) => latestConsent.has(contact.contact_id))
+        .map((contact) => [campaignId, contact.contact_id, latestConsent.get(contact.contact_id), this.rateUsd,
+          contact.campaign_selection_rank]));
       const count = await client.query(`SELECT count(*)::int AS count FROM marketing_campaign_recipients
         WHERE campaign_id=$1`, [campaignId]);
       const recipients = Number(count.rows[0].count);
@@ -315,6 +317,34 @@ export class MarketingStore {
     ]);
     return { eligibleContacts: contacts.rows[0].count, pendingContacts: pending.rows[0].count,
       suppressedContacts: suppressed.rows[0].count,
-      campaigns: campaigns.rows, templates, imports: imports.rows, sendingEnabled: false, rateUsd: this.rateUsd };
+      campaigns: campaigns.rows, templates, imports: imports.rows, audienceAudit: await this.audienceAudit(),
+      sendingEnabled: false, rateUsd: this.rateUsd };
+  }
+
+  async audienceAudit() {
+    const rows = (await this.pool.query(`SELECT c.contact_id,c.phone_e164,p.campaign_selection_rank,
+        p.visits,p.last_visit,p.bonat_row_order
+      FROM marketing_contacts c
+      LEFT JOIN marketing_contact_profiles p ON p.contact_id=c.contact_id
+      LEFT JOIN marketing_suppressions s ON s.phone_e164=c.phone_e164
+      WHERE c.consent_status='opted_in' AND s.phone_e164 IS NULL
+      ORDER BY p.campaign_selection_rank ASC NULLS LAST,c.contact_id ASC`)).rows;
+    const numeric = (value, fallback) => value === null || value === undefined ? fallback : Number(value);
+    const timestamp = (value) => value ? new Date(value).getTime() : Number.NEGATIVE_INFINITY;
+    const expected = [...rows].sort((a, b) => numeric(b.visits, Number.NEGATIVE_INFINITY)
+      - numeric(a.visits, Number.NEGATIVE_INFINITY) || timestamp(b.last_visit) - timestamp(a.last_visit)
+      || numeric(a.bonat_row_order, Number.POSITIVE_INFINITY) - numeric(b.bonat_row_order, Number.POSITIVE_INFINITY)
+      || String(a.contact_id).localeCompare(String(b.contact_id)));
+    const distinctRanks = new Set(rows.filter((row) => row.campaign_selection_rank !== null)
+      .map((row) => Number(row.campaign_selection_rank)));
+    const sample = (row) => row ? { rank: Number(row.campaign_selection_rank), visits: Number(row.visits),
+      last_visit: row.last_visit, bonat_row_order: Number(row.bonat_row_order),
+      phone_tail: String(row.phone_e164).slice(-4) } : null;
+    return { eligible_count: rows.length, distinct_rank_count: distinctRanks.size,
+      missing_rank_count: rows.filter((row) => row.campaign_selection_rank === null).length,
+      ordering_mismatch_count: rows.filter((row, index) => expected[index]?.contact_id !== row.contact_id).length,
+      min_rank: distinctRanks.size ? Math.min(...distinctRanks) : null,
+      max_rank: distinctRanks.size ? Math.max(...distinctRanks) : null,
+      top: rows.slice(0, 3).map(sample), cutoff: sample(rows.at(-1)) };
   }
 }

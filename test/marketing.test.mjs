@@ -119,6 +119,31 @@ test('owner-approved ranked audience keeps deterministic priority in campaign re
     JOIN marketing_contacts c USING (contact_id) WHERE r.campaign_id=$1 ORDER BY r.selection_rank`, [draft.campaign_id]);
   assert.deepEqual(recipients.rows.map((row) => [row.selection_rank, row.phone_e164]),
     [[1, '966500000001'], [2, '966500000002']]);
+  const audit = await store.audienceAudit();
+  assert.deepEqual({ eligible: audit.eligible_count, distinct: audit.distinct_rank_count,
+    missing: audit.missing_rank_count, mismatches: audit.ordering_mismatch_count, min: audit.min_rank,
+    max: audit.max_rank }, { eligible: 2, distinct: 2, missing: 0, mismatches: 0, min: 1, max: 2 });
+  assert.deepEqual(audit.top.map((row) => [row.rank, row.visits]), [[1, 10], [2, 8]]);
+  assert.equal(audit.cutoff.rank, 2);
+  await pool.end();
+});
+
+test('large ranked campaign draft uses batched recipient inserts and preserves all ranks', async () => {
+  const { pool, store } = await setup();
+  const consent = { consentStatus: 'yes', consentSource: 'Owner-confirmed existing customer marketing consent',
+    consentAt: '2026-09-30T09:28:20.999Z', consentEvidence: 'Owner confirmation recorded for the existing Mozzaro customer list' };
+  const rows = Array.from({ length: 3000 }, (_, index) => ({ phone: `05${String(index).padStart(8, '0')}`,
+    visits: 3000 - index, lastVisit: new Date(Date.UTC(2026, 8, 30) - index * 1000).toISOString(),
+    campaignSelectionRank: index + 1, bonatRowOrder: index + 1, ...consent }));
+  await store.importRows({ rows, filename: 'bonat_top_3000_by_visits_owner_consent.xlsx', fileSha256: 'e'.repeat(64) });
+  await store.syncTemplates([{ id: 'tpl-large', name: 'mozzaro_focaccia_launch_ar', language: 'ar',
+    category: 'MARKETING', status: 'APPROVED' }]);
+  const draft = await store.createCampaign({ name: 'حملة 3000', templateId: 'tpl-large' });
+  assert.equal(draft.eligible_recipient_count, 3000);
+  const ranks = await pool.query(`SELECT min(selection_rank)::int AS min,max(selection_rank)::int AS max,
+    count(DISTINCT selection_rank)::int AS count FROM marketing_campaign_recipients WHERE campaign_id=$1`,
+  [draft.campaign_id]);
+  assert.deepEqual(ranks.rows[0], { min: 1, max: 3000, count: 3000 });
   await pool.end();
 });
 
