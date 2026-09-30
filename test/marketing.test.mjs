@@ -101,6 +101,27 @@ test('campaign approval and scheduling never enable sending', async () => {
   await pool.end();
 });
 
+test('owner-approved ranked audience keeps deterministic priority in campaign recipients', async () => {
+  const { pool, store } = await setup();
+  const consent = { consentStatus: 'yes', consentSource: 'Owner-confirmed existing customer marketing consent',
+    consentAt: '2026-09-30T09:28:20.999Z', consentEvidence: 'Owner confirmation recorded for the existing Mozzaro customer list' };
+  await store.importRows({ rows: [
+    { phone: '0500000002', displayName: 'الثاني', visits: 8, lastVisit: '2026-09-20T10:00:00Z',
+      campaignSelectionRank: 2, bonatRowOrder: 20, ...consent },
+    { phone: '0500000001', displayName: 'الأول', visits: 10, lastVisit: '2026-09-21T10:00:00Z',
+      campaignSelectionRank: 1, bonatRowOrder: 10, ...consent },
+  ], filename: 'bonat_top_3000_by_visits_owner_consent.xlsx', fileSha256: 'd'.repeat(64) });
+  await store.syncTemplates([{ id: 'tpl-1', name: 'mozzaro_focaccia_launch_ar', language: 'ar',
+    category: 'MARKETING', status: 'APPROVED' }]);
+  const draft = await store.createCampaign({ name: 'إطلاق الفوكاتشا', templateId: 'tpl-1' });
+  assert.equal(draft.eligible_recipient_count, 2);
+  const recipients = await pool.query(`SELECT r.selection_rank,c.phone_e164 FROM marketing_campaign_recipients r
+    JOIN marketing_contacts c USING (contact_id) WHERE r.campaign_id=$1 ORDER BY r.selection_rank`, [draft.campaign_id]);
+  assert.deepEqual(recipients.rows.map((row) => [row.selection_rank, row.phone_e164]),
+    [[1, '966500000001'], [2, '966500000002']]);
+  await pool.end();
+});
+
 test('campaign dashboard APIs require authentication and expose no send route', async () => {
   const { pool, store } = await setup();
   const server = createWebhookServer({ adminApiToken: 'owner-token', marketingStore: store,

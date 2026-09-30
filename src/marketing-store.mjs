@@ -42,8 +42,11 @@ function nullableNumber(value, { integer = false } = {}) {
 function baseContact(row, phone) {
   return { phone, displayName: String(row.displayName ?? '').trim() || null,
     profile: { source: 'bonat_report', registeredAt: nullableDate(row.registeredAt),
+      lastVisit: nullableDate(row.lastVisit),
       visits: nullableNumber(row.visits, { integer: true }), loyaltyPoints: nullableNumber(row.loyaltyPoints),
-      segment: String(row.segment ?? '').trim() || null } };
+      segment: String(row.segment ?? '').trim() || null,
+      campaignSelectionRank: nullableNumber(row.campaignSelectionRank, { integer: true }),
+      bonatRowOrder: nullableNumber(row.bonatRowOrder, { integer: true }) } };
 }
 
 function batches(rows, size = 250) {
@@ -138,13 +141,18 @@ export class MarketingStore {
         .rows.map((row) => [row.phone_e164, row.contact_id]));
       const importedRows = [...eligibleRows, ...pendingRows, ...suppressedRows];
       await insertBatch(client, `INSERT INTO marketing_contact_profiles
-        (contact_id,source,registered_at,visits,loyalty_points,segment)`, importedRows.map((row) =>
-        [contactByPhone.get(row.phone), row.profile.source, row.profile.registeredAt, row.profile.visits,
-          row.profile.loyaltyPoints, row.profile.segment]), `ON CONFLICT (contact_id) DO UPDATE SET
+        (contact_id,source,registered_at,last_visit,visits,loyalty_points,segment,campaign_selection_rank,bonat_row_order)`,
+      importedRows.map((row) =>
+        [contactByPhone.get(row.phone), row.profile.source, row.profile.registeredAt, row.profile.lastVisit,
+          row.profile.visits, row.profile.loyaltyPoints, row.profile.segment,
+          row.profile.campaignSelectionRank, row.profile.bonatRowOrder]), `ON CONFLICT (contact_id) DO UPDATE SET
         source=EXCLUDED.source,registered_at=COALESCE(EXCLUDED.registered_at,marketing_contact_profiles.registered_at),
+        last_visit=COALESCE(EXCLUDED.last_visit,marketing_contact_profiles.last_visit),
         visits=COALESCE(EXCLUDED.visits,marketing_contact_profiles.visits),
         loyalty_points=COALESCE(EXCLUDED.loyalty_points,marketing_contact_profiles.loyalty_points),
-        segment=COALESCE(EXCLUDED.segment,marketing_contact_profiles.segment),updated_at=now()`);
+        segment=COALESCE(EXCLUDED.segment,marketing_contact_profiles.segment),
+        campaign_selection_rank=COALESCE(EXCLUDED.campaign_selection_rank,marketing_contact_profiles.campaign_selection_rank),
+        bonat_row_order=COALESCE(EXCLUDED.bonat_row_order,marketing_contact_profiles.bonat_row_order),updated_at=now()`);
       await insertBatch(client, `INSERT INTO marketing_consent_events
         (consent_event_id,contact_id,consent_status,source,evidence,occurred_at)`, eligibleRows.map((row) =>
         [randomUUID(), contactByPhone.get(row.phone), 'opted_in', row.consentSource, row.consentEvidence, row.consentAt]));
@@ -216,16 +224,20 @@ export class MarketingStore {
       await client.query('BEGIN');
       await client.query(`INSERT INTO marketing_campaigns (campaign_id,name,template_id,rate_usd)
         VALUES ($1,$2,$3,$4)`, [campaignId, name.trim(), templateId, this.rateUsd]);
-      const eligible = await client.query(`SELECT c.contact_id FROM marketing_contacts c
+      const eligible = await client.query(`SELECT c.contact_id,p.campaign_selection_rank FROM marketing_contacts c
+        LEFT JOIN marketing_contact_profiles p ON p.contact_id=c.contact_id
         LEFT JOIN marketing_suppressions s ON s.phone_e164=c.phone_e164
-        WHERE c.consent_status='opted_in' AND s.phone_e164 IS NULL`);
+        WHERE c.consent_status='opted_in' AND s.phone_e164 IS NULL
+        ORDER BY p.campaign_selection_rank ASC NULLS LAST,p.visits DESC NULLS LAST,
+          p.last_visit DESC NULLS LAST,p.bonat_row_order ASC NULLS LAST,c.contact_id ASC`);
       for (const contact of eligible.rows) {
         const consent = await client.query(`SELECT consent_event_id FROM marketing_consent_events
           WHERE contact_id=$1 AND consent_status='opted_in'
           ORDER BY occurred_at DESC,recorded_at DESC LIMIT 1`, [contact.contact_id]);
         if (consent.rowCount) await client.query(`INSERT INTO marketing_campaign_recipients
-          (campaign_id,contact_id,consent_event_id,estimated_cost_usd) VALUES ($1,$2,$3,$4)`,
-        [campaignId, contact.contact_id, consent.rows[0].consent_event_id, this.rateUsd]);
+          (campaign_id,contact_id,consent_event_id,estimated_cost_usd,selection_rank) VALUES ($1,$2,$3,$4,$5)`,
+        [campaignId, contact.contact_id, consent.rows[0].consent_event_id, this.rateUsd,
+          contact.campaign_selection_rank]);
       }
       const count = await client.query(`SELECT count(*)::int AS count FROM marketing_campaign_recipients
         WHERE campaign_id=$1`, [campaignId]);

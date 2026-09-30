@@ -10,9 +10,12 @@ const ALIASES = Object.freeze({
   consentAt: ['consent_at', 'consent_timestamp', 'timestamp', 'تاريخ الموافقة'],
   consentEvidence: ['consent_evidence', 'evidence', 'دليل الموافقة'],
   registeredAt: ['registered_at', 'registered since', 'registration_date', 'registration date', 'تاريخ التسجيل'],
+  lastVisit: ['last_visit', 'last visit', 'تاريخ آخر زيارة', 'اخر زيارة', 'آخر زيارة'],
   visits: ['visits', 'visit_count', 'عدد الزيارات', 'الزيارات'],
   loyaltyPoints: ['loyalty_points', 'points balance', 'points', 'رصيد النقاط', 'النقاط'],
   segment: ['segment', 'customer segment', 'الشريحة', 'شريحة العميل'],
+  campaignSelectionRank: ['campaign_selection_rank', 'selection_rank', 'ترتيب الحملة'],
+  bonatRowOrder: ['bonat_row_order', 'original_bonat_row_order', 'ترتيب bonat الأصلي'],
 });
 
 function splitCsv(text) {
