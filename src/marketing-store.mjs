@@ -244,8 +244,10 @@ export class MarketingStore {
       const count = await client.query(`SELECT count(*)::int AS count FROM marketing_campaign_recipients
         WHERE campaign_id=$1`, [campaignId]);
       const recipients = Number(count.rows[0].count);
+      const estimatedCostUsd = Number((recipients * this.rateUsd).toFixed(6));
       await client.query(`UPDATE marketing_campaigns SET eligible_recipient_count=$2,
-        estimated_cost_usd=$2*rate_usd,updated_at=now() WHERE campaign_id=$1`, [campaignId, recipients]);
+        estimated_cost_usd=$3,updated_at=now() WHERE campaign_id=$1`,
+      [campaignId, recipients, estimatedCostUsd]);
       await client.query('COMMIT'); return this.getCampaign(campaignId);
     } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
     finally { client.release(); }

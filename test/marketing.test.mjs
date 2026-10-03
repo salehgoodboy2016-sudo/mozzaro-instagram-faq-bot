@@ -140,6 +140,7 @@ test('large ranked campaign draft uses batched recipient inserts and preserves a
     category: 'MARKETING', status: 'APPROVED' }]);
   const draft = await store.createCampaign({ name: 'حملة 3000', templateId: 'tpl-large' });
   assert.equal(draft.eligible_recipient_count, 3000);
+  assert.equal(Number(draft.estimated_cost_usd), 32.1);
   const ranks = await pool.query(`SELECT min(selection_rank)::int AS min,max(selection_rank)::int AS max,
     count(DISTINCT selection_rank)::int AS count FROM marketing_campaign_recipients WHERE campaign_id=$1`,
   [draft.campaign_id]);
