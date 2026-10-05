@@ -314,6 +314,32 @@ test('menu and price questions deterministically request the official PDF', () =
   assert.equal(planWhatsAppReply('هل فيها مكسرات؟').silent, true);
 });
 
+test('product mentions require real menu intent and never produce textual prices', () => {
+  for (const message of ['الفوكاتشا', 'بيتزا', 'البيتزا الترفل فيها ماشروم؟',
+    'أقدر أشيل المشروم من الترفل؟', 'وش أفضل بيتزا عندكم؟']) {
+    const plan = planWhatsAppReply(message);
+    assert.notEqual(plan.type, 'document', message);
+    assert.doesNotMatch(plan.reply || '', /\d+\s*ريال|أسعار/, message);
+  }
+
+  for (const complaint of ['الفوكاتشا ما عجبتني', 'البيتزا وصلت باردة']) {
+    const plan = planWhatsAppReply(complaint);
+    assert.equal(plan.requiresHuman, true, complaint);
+    assert.equal(plan.reason, 'complaint', complaint);
+    assert.notEqual(plan.type, 'document', complaint);
+  }
+});
+
+test('all explicit item, category, price, and selection requests use one full menu document', () => {
+  for (const message of ['بكم بيتزا الترفل؟', 'الترفل بكم؟', 'كم سعر الفوكاتشا؟',
+    'أسعار الساندويتشات', 'وش أنواع الفوكاتشا؟', 'ممكن المنيو', 'ارسل المنيو', 'كم البيتزا والباستا؟', 'وش عندكم؟']) {
+    const plan = planWhatsAppReply(message);
+    assert.equal(plan.type, 'document', message);
+    assert.deepEqual(plan.documentKinds, ['menu'], message);
+    assert.equal(plan.reply, 'حياك الله، تفضل منيو موزارو، فيه جميع الأصناف والأسعار.', message);
+  }
+});
+
 test('Claude menu topics can only resolve to the official menu PDF action', () => {
   assert.equal(MOZZARO_AI_TOPICS.includes('menu_pizza_margherita'), true);
   assert.equal(renderApprovedTopics(['menu_pizza_margherita']).type, 'document');

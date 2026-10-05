@@ -91,10 +91,19 @@ function isMenuDocumentRequest(text, cateringContext = false) {
   const explicitMenu = includes(text, [
     'المنيو', 'المينيو', 'منيو', 'قائمه الطعام', 'قائمة الطعام', 'food menu', 'what is the menu', 'menu',
   ]);
+  const excludesNonPriceHowMany = includes(text, [
+    'كم سعرات', 'كم سعره حراريه', 'كم مكون', 'كم حبه', 'كم قطعه', 'كم شخص',
+  ]);
+  const contextualHowMuch = /^\u0643\u0645(?:\s|$)/u.test(text) && menuTopics.length > 0 && !excludesNonPriceHowMany;
   const priceRequest = includes(text, ['الاسعار', 'الأسعار', 'اسعار', 'أسعار', 'prices', 'price', 'how much', 'بكم', 'كم السعر', 'كم سعر'])
-    || (includes(text, ['كم']) && menuTopics.length > 0);
-  const categoryListing = menuTopics.length > 0 && includes(text, ['وش عندكم', 'ايش عندكم', 'إيش عندكم', 'وش الاصناف', 'وش الأصناف']);
-  if (!cateringContext) return explicitMenu || priceRequest || categoryListing;
+    || contextualHowMuch;
+  const categoryListing = menuTopics.length > 0 && includes(text, [
+    'وش عندكم', 'ايش عندكم', 'إيش عندكم', 'وش الاصناف', 'وش الأصناف',
+    'وش انواع', 'وش أنواع', 'ايش انواع', 'إيش أنواع', 'what do you have', 'which pizzas', 'what pizzas',
+  ]);
+  const generalListing = new Set(['وش عندكم', 'ايش عندكم', 'إيش عندكم', 'what do you have']
+    .map(normalizeArabic)).has(text);
+  if (!cateringContext) return explicitMenu || priceRequest || categoryListing || generalListing;
 
   const explicitlyCombined = includes(text, [
     'المنيو والكيترنق', 'المنيو و الكيترنق', 'المينيو والكيترنق', 'منيو المطعم والكيترنق',
@@ -324,7 +333,8 @@ export function planWhatsAppReply(rawText, now = new Date()) {
   const casualGreeting = !islamicGreeting && includes(text, ['هلا', 'اهلا', 'أهلا', 'مرحبا', 'يا هلا']);
   const complaint = includes(text, [
     'شكوى', 'اشتك', 'زعلان', 'سيء', 'سيئ', 'غلط', 'خطا', 'تأخر', 'تاخير', 'متاخر',
-    'ناقص', 'مفقود', 'ما وصل', 'ماجاني', 'طلب غلط', 'استرجاع', 'تعويض', 'اقتراح', 'أقترح', 'اقترح', 'مقترح', 'فكرة', 'ملاحظة', 'refund', 'suggestion', 'feedback',
+    'ناقص', 'مفقود', 'ما وصل', 'ماجاني', 'طلب غلط', 'استرجاع', 'تعويض', 'اقتراح', 'أقترح', 'اقترح', 'مقترح', 'فكرة', 'ملاحظة',
+    'ما عجبتني', 'ماعجبتني', 'ما عجبني', 'ماعجبني', 'بارده', 'بارد', 'مشكله', 'مشكلة', 'refund', 'suggestion', 'feedback',
     'complaint', 'wrong order', 'missing item', 'late delivery', 'حساسيه', 'حساس',
   ]);
   if (complaint) return { reply: null, topics: [], requiresHuman: true, reason: 'complaint' };
@@ -375,7 +385,8 @@ export function planWhatsAppReply(rawText, now = new Date()) {
   if (menuTopics.includes('menu_all')) {
     return approvedDocumentPlan({ menu: true, location: asksLocation });
   }
-  if (menuTopics.length) topics.push(...menuTopics);
+  // Product names provide context only. Without an explicit menu/price/listing intent above,
+  // they must never generate item prices or category price lists in chat.
   if (asksLocation) topics.push('location');
   if (includes(text, ['دجاج', 'لحم', 'لحوم', 'مصدر', 'مورد', 'chicken', 'meat'])
     || (includes(text, ['بيبروني', 'ببروني', 'pepperoni']) && includes(text, ['من وين', 'مصدر', 'مورد', 'supplier']))) topics.push('suppliers');
