@@ -4,6 +4,7 @@ COPY package.json pnpm-lock.yaml ./
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate && pnpm install --prod --frozen-lockfile
 COPY src ./src
 COPY assets/menu ./assets/menu
+COPY public ./public
 COPY scripts ./scripts
 COPY migrations ./migrations
 RUN mkdir -p /app/data
