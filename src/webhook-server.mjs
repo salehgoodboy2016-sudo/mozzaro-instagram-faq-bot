@@ -11,9 +11,10 @@ import { InstagramClient } from './instagram-client.mjs';
 import { extractStoryMentions, queueStoryMention } from './story-mentions.mjs';
 import { planWhatsAppReply } from './whatsapp-faq.mjs';
 import { WhatsAppStore } from './whatsapp-store.mjs';
-import { WhatsAppService } from './whatsapp-service.mjs';
+import { WhatsAppService, extractWhatsAppEvents } from './whatsapp-service.mjs';
 import { WhatsAppClient } from './whatsapp-client.mjs';
 import { KapsoClient } from './kapso-client.mjs';
+import { MetaCampaignClient } from './meta-campaign-client.mjs';
 import { ClaudeClient } from './claude-client.mjs';
 import { MOZZARO_KNOWLEDGE } from './mozzaro-knowledge.mjs';
 import { extractKapsoEvents, verifyKapsoSignature } from './kapso-webhook.mjs';
@@ -30,6 +31,8 @@ const officialMenuPdf = await readFile(new URL('../assets/menu/mozzaro-menu.pdf'
 const officialMenuEtag = `"${createHash('sha256').update(officialMenuPdf).digest('hex')}"`;
 const officialCateringPdf = await readFile(new URL('../assets/menu/mozzaro-catering.pdf', import.meta.url));
 const officialCateringEtag = `"${createHash('sha256').update(officialCateringPdf).digest('hex')}"`;
+const focacciaCampaignImage = await readFile(new URL('../public/marketing/mozzaro-focaccia-launch.png', import.meta.url));
+const focacciaCampaignImageEtag = `"${createHash('sha256').update(focacciaCampaignImage).digest('hex')}"`;
 const CLAUDE_KNOWLEDGE = Object.freeze({
   ...Object.fromEntries(Object.entries(MOZZARO_KNOWLEDGE).filter(([key]) => ![
     'localChickenText', 'cateringText', 'whatsappOrdersText', 'whatsappDeliveryText', 'whatsappOrdersContactText',
@@ -90,6 +93,9 @@ const config = {
   adminApiToken: env.MOZZARO_ADMIN_API_TOKEN || '',
   whatsappMarketingRateUsd: Number(env.WHATSAPP_MARKETING_RATE_USD || DEFAULT_SAUDI_MARKETING_RATE_USD),
   kapsoMonthlyMessageLimit: Number(env.KAPSO_MONTHLY_MESSAGE_LIMIT || 2000),
+  metaCampaignAccessToken: env.META_CAMPAIGN_ACCESS_TOKEN || '',
+  metaCampaignEnabled: env.META_CAMPAIGN_SENDING_ENABLED === 'true',
+  metaCampaignApiVersion: env.META_CAMPAIGN_GRAPH_API_VERSION || 'v26.0',
 };
 const store = new StateStore(config.stateFile, config.repeatCooldownMs);
 await store.load();
@@ -199,6 +205,7 @@ export function createWebhookServer(overrides = {}) {
   const kapsoService = overrides.kapsoService || null;
   const marketingStore = overrides.marketingStore || null;
   const campaignKapsoClient = overrides.campaignKapsoClient || null;
+  const campaignMetaClient = overrides.campaignMetaClient || null;
   const automationService = kapsoService || whatsappService;
   return createServer(async (req, res) => {
     try {
@@ -212,6 +219,12 @@ export function createWebhookServer(overrides = {}) {
         'Content-Disposition': `inline; filename*=UTF-8''${filename}`,
         'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff', ETag: etag });
       res.end(req.method === 'HEAD' ? undefined : pdf); return;
+    }
+    if (['GET', 'HEAD'].includes(req.method) && pdfPath === '/marketing/mozzaro-focaccia-launch.png') {
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': focacciaCampaignImage.length,
+        'Cache-Control': 'public, max-age=86400, immutable', 'X-Content-Type-Options': 'nosniff',
+        ETag: focacciaCampaignImageEtag });
+      res.end(req.method === 'HEAD' ? undefined : focacciaCampaignImage); return;
     }
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -231,6 +244,8 @@ export function createWebhookServer(overrides = {}) {
           && handlerConfig.claudeMonthlyLimitUsd > 0 && handlerConfig.claudeInputUsdPerMillion > 0 && handlerConfig.claudeOutputUsdPerMillion > 0),
         campaignDashboardReady: Boolean(marketingStore),
         campaignSendingEnabled: false,
+        metaCampaignConfigured: Boolean(campaignMetaClient?.configured),
+        metaCampaignSendingEnabled: false,
       })); return;
     }
     const campaignPath = new URL(req.url || '/', 'http://localhost').pathname;
@@ -244,7 +259,8 @@ export function createWebhookServer(overrides = {}) {
       const authorized = safeTokenEqual((req.headers.authorization || '').replace(/^Bearer /i, ''), handlerConfig.adminApiToken);
       if (!authorized) { res.writeHead(401, { 'Cache-Control': 'no-store' }); res.end('Unauthorized'); return; }
       await handleCampaignApi({ req, res, store: marketingStore, kapsoClient: campaignKapsoClient,
-        businessAccountId: handlerConfig.whatsappBusinessAccountId, planLimit: handlerConfig.kapsoMonthlyMessageLimit });
+        metaClient: campaignMetaClient, businessAccountId: handlerConfig.whatsappBusinessAccountId,
+        planLimit: handlerConfig.kapsoMonthlyMessageLimit });
       return;
     }
     if (new URL(req.url || '/', 'http://localhost').pathname.startsWith('/admin/whatsapp/')) {
@@ -406,7 +422,13 @@ export function createWebhookServer(overrides = {}) {
       // Log only aggregate receipt metadata. Never write message text, sender IDs,
       // phone numbers, or the webhook payload to application logs.
       console.log(JSON.stringify({ service: 'whatsapp-webhook', received: true, entryCount: payload.entry.length, messageCount }));
-      if (whatsappService) {
+      const metaEvents = extractWhatsAppEvents(payload);
+      if (marketingStore) await marketingStore.recordMetaEvents(metaEvents).catch(() => {
+        console.error(JSON.stringify({ service: 'marketing-reporting', provider: 'meta_direct', outcome: 'event_record_failed' }));
+      });
+      // Kapso remains the only customer-service automation transport. With
+      // Kapso configured, this endpoint is status-only to prevent dual replies.
+      if (whatsappService && !kapsoService) {
         try {
           const result = await whatsappService.process(payload);
           console.log(JSON.stringify({ service: 'whatsapp-automation', eventCount: result.count, outcomes: result.outcomes }));
@@ -472,6 +494,12 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     aiClient: claudeClient, aiMonthlyLimitUsd: config.claudeMonthlyLimitUsd, knowledge: CLAUDE_KNOWLEDGE });
   const marketingStore = whatsappStore ? new MarketingStore({ pool: whatsappStore.pool,
     rateUsd: config.whatsappMarketingRateUsd }) : null;
+  const metaCampaignClient = new MetaCampaignClient({ token: config.metaCampaignAccessToken,
+    phoneNumberId: config.whatsappPhoneNumberId, businessAccountId: config.whatsappBusinessAccountId,
+    apiVersion: config.metaCampaignApiVersion,
+    // Infrastructure is deployed first; no production send can occur until a
+    // separately reviewed release removes this fail-closed gate.
+    enabled: config.metaCampaignEnabled && false });
 
   // WHATSAPP_RESUME_SENDER is an explicit, one-time operator action. It is
   // accepted only when it is the sole allowlisted sender, and the database
@@ -487,7 +515,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     console.log(JSON.stringify({ service: 'whatsapp-handoff', oneTimeResume: outcome }));
   }
 
-  const server = createWebhookServer({ whatsappService, kapsoService, marketingStore, campaignKapsoClient: kapsoClient });
+  const server = createWebhookServer({ whatsappService, kapsoService, marketingStore,
+    campaignKapsoClient: kapsoClient, campaignMetaClient: metaCampaignClient });
   server.listen(config.port, () => {
     console.log(JSON.stringify({ service: 'mozzaro-webhook', port: config.port,
       instagramAutoReplyEnabled: config.enabled, whatsappAutomationEnabled: config.whatsappGlobalEnabled,

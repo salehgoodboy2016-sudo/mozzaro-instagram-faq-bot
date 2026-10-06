@@ -213,8 +213,10 @@ export class MarketingStore {
       FROM marketing_templates ORDER BY name`)).rows;
   }
 
-  async createCampaign({ name, templateId }) {
-    if (!String(name || '').trim() || !templateId) throw new Error('Invalid campaign');
+  async createCampaign({ name, templateId, provider = 'kapso' }) {
+    if (!String(name || '').trim() || !templateId || !['kapso', 'meta_direct'].includes(provider)) {
+      throw new Error('Invalid campaign');
+    }
     const template = await this.pool.query(`SELECT 1 FROM marketing_templates
       WHERE template_id=$1 AND status='APPROVED' AND category='MARKETING'`, [templateId]);
     if (!template.rowCount) throw new Error('Approved marketing template required');
@@ -222,8 +224,8 @@ export class MarketingStore {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(`INSERT INTO marketing_campaigns (campaign_id,name,template_id,rate_usd)
-        VALUES ($1,$2,$3,$4)`, [campaignId, name.trim(), templateId, this.rateUsd]);
+      await client.query(`INSERT INTO marketing_campaigns (campaign_id,name,template_id,rate_usd,provider)
+        VALUES ($1,$2,$3,$4,$5)`, [campaignId, name.trim(), templateId, this.rateUsd, provider]);
       const eligible = await client.query(`SELECT c.contact_id,p.campaign_selection_rank FROM marketing_contacts c
         LEFT JOIN marketing_contact_profiles p ON p.contact_id=c.contact_id
         LEFT JOIN marketing_suppressions s ON s.phone_e164=c.phone_e164
@@ -237,10 +239,10 @@ export class MarketingStore {
         latestConsent.set(row.contact_id, row.consent_event_id);
       }
       await insertBatch(client, `INSERT INTO marketing_campaign_recipients
-        (campaign_id,contact_id,consent_event_id,estimated_cost_usd,selection_rank)`, eligible.rows
+        (campaign_id,contact_id,consent_event_id,estimated_cost_usd,selection_rank,provider)`, eligible.rows
         .filter((contact) => latestConsent.has(contact.contact_id))
         .map((contact) => [campaignId, contact.contact_id, latestConsent.get(contact.contact_id), this.rateUsd,
-          contact.campaign_selection_rank]));
+          contact.campaign_selection_rank, provider]));
       const count = await client.query(`SELECT count(*)::int AS count FROM marketing_campaign_recipients
         WHERE campaign_id=$1`, [campaignId]);
       const recipients = Number(count.rows[0].count);
@@ -284,6 +286,53 @@ export class MarketingStore {
     return (await this.pool.query('SELECT * FROM marketing_campaigns WHERE campaign_id=$1', [id])).rows[0] || null;
   }
 
+  async reserveMetaBatch({ campaignId, requestedCount, limitUnique, usedUnique, observedAt,
+    capacitySource, ownerAuthorizationId, now = new Date() }) {
+    const requested = Number(requestedCount); const limit = Number(limitUnique); const used = Number(usedUnique);
+    const observed = new Date(observedAt);
+    if (!/^[a-f0-9-]{36}$/i.test(String(ownerAuthorizationId || '')) || !Number.isInteger(requested)
+      || requested <= 0 || !Number.isInteger(limit) || limit <= 0 || !Number.isInteger(used) || used < 0
+      || used > limit || !Number.isFinite(observed.getTime()) || Math.abs(now - observed) > 5 * 60_000
+      || !String(capacitySource || '').trim()) throw new Error('Invalid Meta capacity authorization');
+    const available = limit - used;
+    if (requested > available) throw new Error('Meta capacity exceeded');
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const duplicate = await client.query('SELECT * FROM marketing_campaign_batches WHERE owner_authorization_id=$1',
+        [ownerAuthorizationId]);
+      if (duplicate.rowCount) { await client.query('COMMIT'); return duplicate.rows[0]; }
+      const campaign = await client.query(`SELECT campaign_id FROM marketing_campaigns
+        WHERE campaign_id=$1 AND provider='meta_direct' AND status='approved' AND sending_enabled=false FOR UPDATE`,
+      [campaignId]);
+      if (!campaign.rowCount) throw new Error('Approved Meta Direct campaign required');
+      const recipients = await client.query(`SELECT r.contact_id FROM marketing_campaign_recipients r
+        JOIN marketing_contacts c USING (contact_id)
+        LEFT JOIN marketing_suppressions s ON s.phone_e164=c.phone_e164
+        LEFT JOIN marketing_campaign_batch_recipients br
+          ON br.campaign_id=r.campaign_id AND br.contact_id=r.contact_id
+        LEFT JOIN marketing_campaign_batches b
+          ON b.batch_id=br.batch_id AND b.status='reserved_disabled'
+        WHERE r.campaign_id=$1 AND r.provider='meta_direct' AND r.status='eligible'
+          AND c.consent_status='opted_in' AND s.phone_e164 IS NULL
+          AND b.batch_id IS NULL
+        ORDER BY r.selection_rank ASC NULLS LAST,r.contact_id ASC LIMIT $2`, [campaignId, requested]);
+      if (recipients.rowCount !== requested) throw new Error('Insufficient eligible recipients');
+      const batchId = randomUUID();
+      await client.query(`INSERT INTO marketing_campaign_batches
+        (batch_id,campaign_id,provider,status,requested_count,reserved_count,limit_unique,used_unique,
+          available_unique,capacity_observed_at,capacity_source,owner_authorization_id)
+        VALUES ($1,$2,'meta_direct','reserved_disabled',$3,$3,$4,$5,$6,$7,$8,$9)`,
+      [batchId, campaignId, requested, limit, used, available, observed, capacitySource, ownerAuthorizationId]);
+      await insertBatch(client, `INSERT INTO marketing_campaign_batch_recipients
+        (batch_id,campaign_id,contact_id,selection_order)`, recipients.rows.map((row, index) =>
+        [batchId, campaignId, row.contact_id, index + 1]));
+      await client.query('COMMIT');
+      return (await this.pool.query('SELECT * FROM marketing_campaign_batches WHERE batch_id=$1', [batchId])).rows[0];
+    } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+    finally { client.release(); }
+  }
+
   async recordKapsoEvents(events) {
     for (const event of events) {
       if (event.kind !== 'status' || !event.providerMessageId) continue;
@@ -295,7 +344,7 @@ export class MarketingStore {
         delivered_at=CASE WHEN $2='delivered' THEN COALESCE(delivered_at,$3) ELSE delivered_at END,
         read_at=CASE WHEN $2='read' THEN COALESCE(read_at,$3) ELSE read_at END,
         error_category=CASE WHEN $2='failed' THEN 'provider_rejected' ELSE error_category END
-        WHERE provider_message_id=$1 AND (($2='sent' AND status='eligible')
+        WHERE provider='kapso' AND provider_message_id=$1 AND (($2='sent' AND status='eligible')
           OR ($2='delivered' AND status IN ('eligible','sent'))
           OR ($2='read' AND status IN ('eligible','sent','delivered'))
           OR ($2='failed' AND status IN ('eligible','sent')))
@@ -308,13 +357,68 @@ export class MarketingStore {
     }
   }
 
+  async recordMetaEvents(events) {
+    for (const event of events) {
+      if (event.kind !== 'status' || !event.providerMessageId) continue;
+      const mapping = { sent: 'sent', delivered: 'delivered', read: 'read', failed: 'failed' };
+      const status = mapping[event.status]; if (!status) continue;
+      const at = event.at || new Date();
+      const recipients = await this.pool.query(`UPDATE marketing_campaign_recipients SET status=$2,
+        accepted_at=CASE WHEN $2='sent' THEN COALESCE(accepted_at,$3) ELSE accepted_at END,
+        sent_at=CASE WHEN $2='sent' THEN COALESCE(sent_at,$3) ELSE sent_at END,
+        delivered_at=CASE WHEN $2='delivered' THEN COALESCE(delivered_at,$3) ELSE delivered_at END,
+        read_at=CASE WHEN $2='read' THEN COALESCE(read_at,$3) ELSE read_at END,
+        failed_at=CASE WHEN $2='failed' THEN COALESCE(failed_at,$3) ELSE failed_at END,
+        error_category=CASE WHEN $2='failed' THEN 'meta_rejected' ELSE error_category END,
+        error_code=CASE WHEN $2='failed' THEN $4 ELSE error_code END,
+        error_detail_safe=CASE WHEN $2='failed' THEN $5 ELSE error_detail_safe END
+        WHERE provider='meta_direct' AND provider_message_id=$1 AND (($2='sent' AND status='eligible')
+          OR ($2='delivered' AND status IN ('eligible','sent'))
+          OR ($2='read' AND status IN ('eligible','sent','delivered'))
+          OR ($2='failed' AND status IN ('eligible','sent')))
+        RETURNING campaign_id,contact_id`, [event.providerMessageId, status, at,
+        event.errorCode || null, event.errorCategory || null]);
+      for (const row of recipients.rows) await this.pool.query(`INSERT INTO marketing_campaign_events
+        (event_id,campaign_id,contact_id,event_type,provider_event_id,metadata)
+        VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, [randomUUID(), row.campaign_id, row.contact_id,
+        status, event.id, JSON.stringify({ source: 'meta_direct_webhook', errorCode: event.errorCode || null })]);
+    }
+  }
+
+  async markMetaAccepted({ campaignId, contactId, messageId, at = new Date() }) {
+    if (!campaignId || !contactId || !/^wamid\.[A-Za-z0-9+/=_-]{8,}$/.test(String(messageId || ''))
+      || !Number.isFinite(new Date(at).getTime())) throw new Error('Invalid Meta acceptance');
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(`UPDATE marketing_campaign_recipients SET
+        provider_message_id=$3,status='sent',accepted_at=$4,sent_at=$4
+        WHERE campaign_id=$1 AND contact_id=$2 AND provider='meta_direct' AND status='eligible'
+        RETURNING campaign_id`, [campaignId, contactId, messageId, at]);
+      if (!result.rowCount) throw new Error('Meta recipient is not sendable');
+      await client.query(`INSERT INTO marketing_campaign_events
+        (event_id,campaign_id,contact_id,event_type,provider_event_id,metadata)
+        VALUES ($1,$2,$3,'sent',$4,$5) ON CONFLICT DO NOTHING`, [randomUUID(), campaignId, contactId,
+        `meta:accepted:${messageId}`, JSON.stringify({ source: 'meta_direct_api' })]);
+      await client.query('COMMIT'); return { accepted: true, messageId };
+    } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+    finally { client.release(); }
+  }
+
   async dashboard() {
     const [contacts, pending, suppressed, campaigns, templates, imports] = await Promise.all([
       this.pool.query("SELECT count(*)::int AS count FROM marketing_contacts WHERE consent_status='opted_in'"),
       this.pool.query("SELECT count(*)::int AS count FROM marketing_contacts WHERE consent_status='unknown'"),
       this.pool.query('SELECT count(*)::int AS count FROM marketing_suppressions'),
-      this.pool.query(`SELECT campaign_id,name,status,eligible_recipient_count,estimated_cost_usd,
-        scheduled_at,owner_approved_at,created_at FROM marketing_campaigns ORDER BY created_at DESC LIMIT 50`),
+      this.pool.query(`SELECT c.campaign_id,c.name,c.status,c.provider,c.eligible_recipient_count,c.estimated_cost_usd,
+        c.scheduled_at,c.owner_approved_at,c.created_at,
+        count(*) FILTER (WHERE r.status='eligible')::int AS pending_count,
+        count(*) FILTER (WHERE r.status IN ('sent','delivered','read','replied'))::int AS accepted_count,
+        count(*) FILTER (WHERE r.status='delivered')::int AS delivered_count,
+        count(*) FILTER (WHERE r.status='read')::int AS read_count,
+        count(*) FILTER (WHERE r.status='failed')::int AS failed_count
+        FROM marketing_campaigns c LEFT JOIN marketing_campaign_recipients r USING (campaign_id)
+        GROUP BY c.campaign_id ORDER BY c.created_at DESC LIMIT 50`),
       this.listTemplates(), this.pool.query('SELECT * FROM marketing_imports ORDER BY imported_at DESC LIMIT 20'),
     ]);
     return { eligibleContacts: contacts.rows[0].count, pendingContacts: pending.rows[0].count,

@@ -15,8 +15,12 @@ export function extractWhatsAppEvents(payload) {
             text: message.type === 'text' ? message.text?.body || '' : '', type: message.type });
         }
         for (const status of value.statuses || []) {
-          if (status.id) events.push({ kind: 'status', id: `status:${status.id}:${status.status}:${status.timestamp || ''}`,
-            status: status.status });
+          const seconds = Number(status.timestamp);
+          if (status.id) events.push({ kind: 'status', id: `meta:status:${status.id}:${status.status}:${status.timestamp || ''}`,
+            providerMessageId: String(status.id), status: status.status,
+            at: Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000) : null,
+            errorCode: status.errors?.[0]?.code ? String(status.errors[0].code) : null,
+            errorCategory: status.errors?.[0]?.title ? String(status.errors[0].title).slice(0, 120) : null });
         }
       } else if (change.field === 'smb_message_echoes') {
         for (const echo of value.message_echoes || []) {
