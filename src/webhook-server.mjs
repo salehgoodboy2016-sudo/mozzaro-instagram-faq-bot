@@ -570,7 +570,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
           || !phone.messaging_limit_tier || !qualitySafe || header?.format !== 'IMAGE'
           || body?.text !== exactBody || footer?.text !== exactFooter
           || button?.text !== 'استعرض المنيو' || !preflight.buttonUrlMatches) {
-          throw Object.assign(new Error('Meta one-time test preflight failed'), { code: 'preflight_failed' });
+          throw Object.assign(new Error('Meta one-time test preflight failed'), { code: 'preflight_failed', preflight });
         }
         const reservation = await marketingStore.reserveMetaOneTimeTest({ requestId, recipient, templateName, preflight });
         if (!reservation.reserved) {
@@ -594,7 +594,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
         }
       } catch (error) {
         console.error(JSON.stringify({ service: 'meta-campaign-test', outcome: 'preflight_failed',
-          code: error.code ?? null }));
+          code: error.code ?? null, checks: error.preflight || null }));
       }
     });
   });
