@@ -72,6 +72,32 @@ export class MetaCampaignClient {
     return body;
   }
 
+  async getGrantedPermissions() {
+    if (!this.configured) throw new Error('Meta campaign access is not configured');
+    const response = await this.fetch(`https://graph.facebook.com/${this.apiVersion}/me/permissions`, {
+      headers: { Authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(20_000),
+    });
+    let body; try { body = await response.json(); } catch { body = {}; }
+    if (!response.ok || body.error || !Array.isArray(body.data)) {
+      const error = new Error('Meta permission check failed');
+      error.status = response.status; error.code = body.error?.code ?? null; throw error;
+    }
+    return body.data.filter((item) => item.status === 'granted').map((item) => String(item.permission));
+  }
+
+  async listSubscribedApps() {
+    if (!this.configured) throw new Error('Meta campaign access is not configured');
+    const response = await this.fetch(`https://graph.facebook.com/${this.apiVersion}/${this.businessAccountId}/subscribed_apps`, {
+      headers: { Authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(20_000),
+    });
+    let body; try { body = await response.json(); } catch { body = {}; }
+    if (!response.ok || body.error || !Array.isArray(body.data)) {
+      const error = new Error('Meta subscription check failed');
+      error.status = response.status; error.code = body.error?.code ?? null; throw error;
+    }
+    return body.data.map((item) => ({ id: String(item.id || ''), name: String(item.name || '') }));
+  }
+
   async sendTemplate({ to, templateName, language = 'ar', image }) {
     if (!this.enabled || !this.configured) throw new Error('Meta campaign sending disabled');
     const payload = buildMetaTemplatePayload({ to, templateName, language, image });

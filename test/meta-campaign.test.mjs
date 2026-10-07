@@ -80,6 +80,26 @@ test('Meta Direct verifies the exact production phone and returns live quality a
   assert.equal(status.messaging_limit_tier, 'TIER_250');
 });
 
+test('Meta Direct audits granted scopes and subscribed apps without sending', async () => {
+  let calls = 0;
+  const client = new MetaCampaignClient({ token: 'secret-token', phoneNumberId: '816217614914860',
+    businessAccountId: '4133548783569339', fetchImpl: async (url) => {
+      calls += 1;
+      return String(url).endsWith('/me/permissions')
+        ? new Response(JSON.stringify({ data: [
+          { permission: 'whatsapp_business_messaging', status: 'granted' },
+          { permission: 'whatsapp_business_management', status: 'granted' },
+        ] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        : new Response(JSON.stringify({ data: [{ id: '1637843331181155', name: 'Mozzaro Customer Manager' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } });
+  assert.deepEqual(await client.getGrantedPermissions(),
+    ['whatsapp_business_messaging', 'whatsapp_business_management']);
+  assert.deepEqual(await client.listSubscribedApps(),
+    [{ id: '1637843331181155', name: 'Mozzaro Customer Manager' }]);
+  assert.equal(calls, 2);
+});
+
 test('one-time Meta test is recipient-locked and the request id cannot be reused', async () => {
   const { pool, store } = await setup(); const requestId = 'focaccia-direct-test-20261007';
   const first = await store.reserveMetaOneTimeTest({ requestId, recipient: '966545383080',

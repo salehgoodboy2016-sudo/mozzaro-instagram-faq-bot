@@ -513,6 +513,14 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const metaCampaignTestClient = new MetaCampaignClient({ token: config.metaCampaignAccessToken,
     phoneNumberId: config.whatsappPhoneNumberId, businessAccountId: config.whatsappBusinessAccountId,
     apiVersion: config.metaCampaignApiVersion, enabled: config.metaCampaignTestEnabled });
+  if (metaCampaignClient.configured) Promise.all([
+    metaCampaignClient.getGrantedPermissions(), metaCampaignClient.listSubscribedApps(),
+  ]).then(([permissions, apps]) => console.log(JSON.stringify({ service: 'meta-campaign-diagnostics',
+    messagingPermission: permissions.includes('whatsapp_business_messaging'),
+    managementPermission: permissions.includes('whatsapp_business_management'),
+    appSubscribed: apps.some((app) => app.id === '1637843331181155'), subscribedAppIds: apps.map((app) => app.id) })))
+    .catch((error) => console.error(JSON.stringify({ service: 'meta-campaign-diagnostics', outcome: 'failed',
+      status: error.status ?? null, code: error.code ?? null })));
 
   // WHATSAPP_RESUME_SENDER is an explicit, one-time operator action. It is
   // accepted only when it is the sole allowlisted sender, and the database
