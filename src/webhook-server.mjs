@@ -96,6 +96,9 @@ const config = {
   metaCampaignAccessToken: env.META_CAMPAIGN_ACCESS_TOKEN || '',
   metaCampaignEnabled: env.META_CAMPAIGN_SENDING_ENABLED === 'true',
   metaCampaignApiVersion: env.META_CAMPAIGN_GRAPH_API_VERSION || 'v26.0',
+  metaCampaignTestEnabled: env.META_CAMPAIGN_TEST_SEND_ENABLED === 'true',
+  metaCampaignTestRequestId: env.META_CAMPAIGN_TEST_REQUEST_ID || '',
+  metaCampaignTestRecipient: String(env.META_CAMPAIGN_TEST_RECIPIENT || '').replace(/[^0-9]/g, ''),
 };
 const store = new StateStore(config.stateFile, config.repeatCooldownMs);
 await store.load();
@@ -227,6 +230,8 @@ export function createWebhookServer(overrides = {}) {
       res.end(req.method === 'HEAD' ? undefined : focacciaCampaignImage); return;
     }
     if (req.method === 'GET' && req.url === '/health') {
+      const metaTest = handlerConfig.metaCampaignTestRequestId && marketingStore
+        ? await marketingStore.getMetaOneTimeTest(handlerConfig.metaCampaignTestRequestId) : null;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
@@ -246,6 +251,11 @@ export function createWebhookServer(overrides = {}) {
         campaignSendingEnabled: false,
         metaCampaignConfigured: Boolean(campaignMetaClient?.configured),
         metaCampaignSendingEnabled: false,
+        metaCampaignTestSendingEnabled: handlerConfig.metaCampaignTestEnabled === true,
+        metaCampaignTest: metaTest ? { provider: metaTest.provider, template: metaTest.template_name,
+          status: metaTest.status, messageId: metaTest.provider_message_id,
+          errorCode: metaTest.error_code, errorCategory: metaTest.error_category,
+          preflight: metaTest.preflight, updatedAt: metaTest.updated_at } : null,
       })); return;
     }
     const campaignPath = new URL(req.url || '/', 'http://localhost').pathname;
@@ -500,6 +510,9 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     // Infrastructure is deployed first; no production send can occur until a
     // separately reviewed release removes this fail-closed gate.
     enabled: config.metaCampaignEnabled && false });
+  const metaCampaignTestClient = new MetaCampaignClient({ token: config.metaCampaignAccessToken,
+    phoneNumberId: config.whatsappPhoneNumberId, businessAccountId: config.whatsappBusinessAccountId,
+    apiVersion: config.metaCampaignApiVersion, enabled: config.metaCampaignTestEnabled });
 
   // WHATSAPP_RESUME_SENDER is an explicit, one-time operator action. It is
   // accepted only when it is the sole allowlisted sender, and the database
@@ -525,6 +538,65 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     selfTestWhatsAppChallenge(config.port, config.whatsappVerifyToken)
       .then((accepted) => console.log(JSON.stringify({ service: 'whatsapp-webhook', challengeSelfTest: accepted ? 'passed' : 'failed' })))
       .catch(() => console.error(JSON.stringify({ service: 'whatsapp-webhook', challengeSelfTest: 'error' })));
+    if (config.metaCampaignTestEnabled && marketingStore) setImmediate(async () => {
+      const requestId = config.metaCampaignTestRequestId;
+      const recipient = config.metaCampaignTestRecipient;
+      const templateName = 'mozzaro_focaccia_launch_ar';
+      const image = 'https://mozzaro-instagram-faq-bot.onrender.com/marketing/mozzaro-focaccia-launch.png';
+      try {
+        if (recipient !== '966545383080' || !/^[a-z0-9_-]{12,120}$/i.test(requestId)) {
+          throw Object.assign(new Error('Invalid one-time test configuration'), { code: 'invalid_test_config' });
+        }
+        const [templates, phone, imageResponse] = await Promise.all([
+          metaCampaignTestClient.listApprovedMarketingTemplates(), metaCampaignTestClient.getPhoneNumberStatus(),
+          fetch(image, { method: 'HEAD', signal: AbortSignal.timeout(20_000) }),
+        ]);
+        const template = templates.find((item) => item.id === '1602094334735787'
+          && item.name === templateName && item.language === 'ar');
+        const components = template?.components || [];
+        const header = components.find((item) => item.type === 'HEADER');
+        const body = components.find((item) => item.type === 'BODY');
+        const footer = components.find((item) => item.type === 'FOOTER');
+        const button = components.find((item) => item.type === 'BUTTONS')?.buttons?.find((item) => item.type === 'URL');
+        const exactBody = 'الفوكاتشا وصلت موزارو!\nخبز إيطالي فرش، نحضّره يوميًا بحشوات مختلفة';
+        const exactFooter = 'نستقبلكم يوميًا من 12 الظهر إلى 3 صباحًا.';
+        const qualitySafe = !['RED','BLOCKED'].includes(String(phone.quality_rating || '').toUpperCase());
+        const preflight = { templateApproved: Boolean(template), phoneNumberId: phone.id,
+          qualityRating: phone.quality_rating || null, messagingLimitTier: phone.messaging_limit_tier || null,
+          qualitySafe, imageAccessible: imageResponse.ok, headerImage: header?.format === 'IMAGE',
+          bodyMatches: body?.text === exactBody, footerMatches: footer?.text === exactFooter,
+          buttonUrlMatches: button?.url === 'https://mozzaro-menu.vercel.app/' };
+        if (!template || !imageResponse.ok || phone.id !== '816217614914860'
+          || !phone.messaging_limit_tier || !qualitySafe || header?.format !== 'IMAGE'
+          || body?.text !== exactBody || footer?.text !== exactFooter
+          || button?.text !== 'استعرض المنيو' || !preflight.buttonUrlMatches) {
+          throw Object.assign(new Error('Meta one-time test preflight failed'), { code: 'preflight_failed' });
+        }
+        const reservation = await marketingStore.reserveMetaOneTimeTest({ requestId, recipient, templateName, preflight });
+        if (!reservation.reserved) {
+          console.log(JSON.stringify({ service: 'meta-campaign-test', outcome: 'already_recorded',
+            status: reservation.row?.status || null }));
+          return;
+        }
+        try {
+          const sent = await metaCampaignTestClient.sendTemplate({ to: recipient, templateName,
+            language: 'ar', image: { link: image } });
+          await marketingStore.finishMetaOneTimeTest({ requestId, status: 'accepted', messageId: sent.messageId });
+          console.log(JSON.stringify({ service: 'meta-campaign-test', outcome: 'accepted', provider: 'meta_direct',
+            requestId, messageId: sent.messageId }));
+        } catch (error) {
+          await marketingStore.finishMetaOneTimeTest({ requestId, status: 'ambiguous',
+            errorCode: error.code ? String(error.code) : null, errorCategory: 'meta_send_failed_no_retry' });
+          console.error(JSON.stringify({ service: 'meta-campaign-test', outcome: 'ambiguous_no_retry',
+            status: error.status ?? null, code: error.code ?? null }));
+        } finally {
+          metaCampaignTestClient.enabled = false;
+        }
+      } catch (error) {
+        console.error(JSON.stringify({ service: 'meta-campaign-test', outcome: 'preflight_failed',
+          code: error.code ?? null }));
+      }
+    });
   });
 }
 

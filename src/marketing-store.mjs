@@ -382,7 +382,39 @@ export class MarketingStore {
         (event_id,campaign_id,contact_id,event_type,provider_event_id,metadata)
         VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, [randomUUID(), row.campaign_id, row.contact_id,
         status, event.id, JSON.stringify({ source: 'meta_direct_webhook', errorCode: event.errorCode || null })]);
+      await this.pool.query(`UPDATE meta_campaign_test_sends SET status=$2,
+        error_code=CASE WHEN $2='failed' THEN $3 ELSE error_code END,
+        error_category=CASE WHEN $2='failed' THEN $4 ELSE error_category END,updated_at=$5
+        WHERE provider_message_id=$1 AND status IN ('accepted','sent','delivered')`,
+      [event.providerMessageId, status, event.errorCode || null, event.errorCategory || null, at]);
     }
+  }
+
+  async reserveMetaOneTimeTest({ requestId, recipient, templateName, preflight }) {
+    if (!/^[a-z0-9_-]{12,120}$/i.test(String(requestId || '')) || recipient !== '966545383080'
+      || templateName !== 'mozzaro_focaccia_launch_ar') throw new Error('Invalid one-time Meta test');
+    const existing = await this.pool.query('SELECT * FROM meta_campaign_test_sends WHERE request_id=$1', [requestId]);
+    if (existing.rowCount) return { reserved: false, row: existing.rows[0] };
+    const result = await this.pool.query(`INSERT INTO meta_campaign_test_sends
+      (request_id,provider,recipient_e164,template_name,status,preflight)
+      VALUES ($1,'meta_direct',$2,$3,'reserved',$4) ON CONFLICT (request_id) DO NOTHING RETURNING *`,
+    [requestId, recipient, templateName, JSON.stringify(preflight || {})]);
+    if (result.rowCount) return { reserved: true, row: result.rows[0] };
+    return { reserved: false, row: (await this.pool.query(
+      'SELECT * FROM meta_campaign_test_sends WHERE request_id=$1', [requestId])).rows[0] };
+  }
+
+  async finishMetaOneTimeTest({ requestId, status, messageId = null, errorCode = null, errorCategory = null }) {
+    if (!['preflight_failed','accepted','ambiguous'].includes(status)) throw new Error('Invalid Meta test outcome');
+    return (await this.pool.query(`UPDATE meta_campaign_test_sends SET status=$2,provider_message_id=$3,
+      error_code=$4,error_category=$5,updated_at=now() WHERE request_id=$1 AND status='reserved' RETURNING *`,
+    [requestId, status, messageId, errorCode, errorCategory])).rows[0] || null;
+  }
+
+  async getMetaOneTimeTest(requestId) {
+    return (await this.pool.query(`SELECT request_id,provider,template_name,status,provider_message_id,
+      error_code,error_category,preflight,created_at,updated_at FROM meta_campaign_test_sends WHERE request_id=$1`,
+    [requestId])).rows[0] || null;
   }
 
   async markMetaAccepted({ campaignId, contactId, messageId, at = new Date() }) {

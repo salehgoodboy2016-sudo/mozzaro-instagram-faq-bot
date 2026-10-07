@@ -68,6 +68,35 @@ test('Meta Direct sends one approved template and never includes the access toke
   assert.equal(JSON.parse(request.options.body).type, 'template');
 });
 
+test('Meta Direct verifies the exact production phone and returns live quality and capacity tier', async () => {
+  const client = new MetaCampaignClient({ token: 'secret-token', phoneNumberId: '816217614914860',
+    businessAccountId: '4133548783569339', fetchImpl: async () => new Response(JSON.stringify({
+      id: '816217614914860', display_phone_number: '+966 56 501 7314', verified_name: 'Mozzaro',
+      quality_rating: 'GREEN', messaging_limit_tier: 'TIER_250',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }) });
+  const status = await client.getPhoneNumberStatus();
+  assert.equal(status.id, '816217614914860');
+  assert.equal(status.quality_rating, 'GREEN');
+  assert.equal(status.messaging_limit_tier, 'TIER_250');
+});
+
+test('one-time Meta test is recipient-locked and the request id cannot be reused', async () => {
+  const { pool, store } = await setup(); const requestId = 'focaccia-direct-test-20261007';
+  const first = await store.reserveMetaOneTimeTest({ requestId, recipient: '966545383080',
+    templateName: 'mozzaro_focaccia_launch_ar', preflight: { templateApproved: true } });
+  const second = await store.reserveMetaOneTimeTest({ requestId, recipient: '966545383080',
+    templateName: 'mozzaro_focaccia_launch_ar', preflight: { templateApproved: true } });
+  assert.equal(first.reserved, true); assert.equal(second.reserved, false);
+  await assert.rejects(store.reserveMetaOneTimeTest({ requestId: 'wrong-recipient-test',
+    recipient: '966500000000', templateName: 'mozzaro_focaccia_launch_ar', preflight: {} }), /Invalid/);
+  const accepted = await store.finishMetaOneTimeTest({ requestId, status: 'accepted',
+    messageId: 'wamid.once12345678' });
+  assert.equal(accepted.status, 'accepted');
+  assert.equal((await store.finishMetaOneTimeTest({ requestId, status: 'accepted',
+    messageId: 'wamid.duplicate12345678' })), null);
+  await pool.end();
+});
+
 test('Meta batch reservation preserves rank and rejects stale or excessive capacity', async () => {
   const { pool, store } = await setup();
   const { campaign } = await createMetaDraft(store, pool, 3);

@@ -58,6 +58,20 @@ export class MetaCampaignClient {
     return body.data.filter((item) => item.status === 'APPROVED' && item.category === 'MARKETING');
   }
 
+  async getPhoneNumberStatus() {
+    if (!this.configured) throw new Error('Meta campaign access is not configured');
+    const url = new URL(`https://graph.facebook.com/${this.apiVersion}/${this.phoneNumberId}`);
+    url.searchParams.set('fields', 'id,display_phone_number,verified_name,quality_rating,messaging_limit_tier');
+    const response = await this.fetch(url, { headers: { Authorization: `Bearer ${this.token}` },
+      signal: AbortSignal.timeout(20_000) });
+    let body; try { body = await response.json(); } catch { body = {}; }
+    if (!response.ok || body.error || String(body.id || '') !== this.phoneNumberId) {
+      const error = new Error('Meta phone status check failed');
+      error.status = response.status; error.code = body.error?.code ?? null; throw error;
+    }
+    return body;
+  }
+
   async sendTemplate({ to, templateName, language = 'ar', image }) {
     if (!this.enabled || !this.configured) throw new Error('Meta campaign sending disabled');
     const payload = buildMetaTemplatePayload({ to, templateName, language, image });
