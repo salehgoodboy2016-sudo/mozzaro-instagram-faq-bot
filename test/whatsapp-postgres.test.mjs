@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { newDb } from 'pg-mem';
+import pg from 'pg';
 import { runMigrations } from '../src/db-migrations.mjs';
 import { WhatsAppStore } from '../src/whatsapp-store.mjs';
 
-test('PostgreSQL migrations are repeatable and persist deduplication and handoff state', async () => {
+test('PostgreSQL migrations are repeatable and persist deduplication and handoff state', async (t) => {
   const database = newDb({ noAstCoverageCheck: true });
   const adapter = database.adapters.createPg();
-  const pool = new adapter.Pool();
+  const pool = process.env.WHATSAPP_TEST_DATABASE_URL
+    ? new pg.Pool({ connectionString: process.env.WHATSAPP_TEST_DATABASE_URL }) : new adapter.Pool();
+  if (process.env.WHATSAPP_TEST_DATABASE_URL) t.after(() => pool.end());
 
-  assert.deepEqual(await runMigrations(pool, { advisoryLock: false }), ['001_whatsapp_state.sql', '002_whatsapp_ai.sql', '003_handoff_timeout.sql', '004_marketing_campaigns.sql', '005_marketing_pending_contacts.sql', '006_marketing_audience_priority.sql', '007_meta_direct_campaigns.sql', '008_meta_direct_test_send.sql', '009_meta_test_rejection.sql']);
+  assert.deepEqual(await runMigrations(pool, { advisoryLock: false }), ['001_whatsapp_state.sql', '002_whatsapp_ai.sql', '003_handoff_timeout.sql', '004_marketing_campaigns.sql', '005_marketing_pending_contacts.sql', '006_marketing_audience_priority.sql', '007_meta_direct_campaigns.sql', '008_meta_direct_test_send.sql', '009_meta_test_rejection.sql', '010_whatsapp_processing_audit.sql']);
   assert.deepEqual(await runMigrations(pool, { advisoryLock: false }), []);
 
   const store = new WhatsAppStore({ pool, identityKey: 'integration-test-key' });
@@ -132,5 +135,5 @@ test('PostgreSQL migrations are repeatable and persist deduplication and handoff
     { role: 'user', content: 'هلا' }, { role: 'assistant', content: 'أهلين' },
   ]);
 
-  await pool.end();
+  if (!process.env.WHATSAPP_TEST_DATABASE_URL) await pool.end();
 });

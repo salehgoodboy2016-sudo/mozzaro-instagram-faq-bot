@@ -44,6 +44,22 @@ function normalizeIdentity(value) {
   return /^\+?\d+$/.test(text) ? text.replace(/^\+/, '') : text;
 }
 
+export function processingDiagnostic(error, event, conversationId = null) {
+  const code = /^[A-Z0-9_]{1,40}$/.test(String(error?.code || '')) ? String(error.code) : null;
+  const messages = { '42P10': 'Invalid DISTINCT ordering in database query',
+    '40P01': 'Database deadlock', '40001': 'Database transaction conflict',
+    '57014': 'Database operation timed out', 'ECONNRESET': 'Connection reset',
+    'ETIMEDOUT': 'Operation timed out' };
+  // Never print a raw provider/SQL error message: it can contain request data,
+  // database connection details, or a customer's text.
+  return { service: 'whatsapp-processing', outcome: 'processing_failed',
+    errorClass: /^[A-Za-z]{1,40}$/.test(error?.name || '') ? error.name : 'Error',
+    code, safeMessage: messages[code] || 'Processing operation failed; inspect recorded stage and code',
+    stage: event.processingStage || 'event_dispatch',
+    eventId: /^(incoming:|employee_echo:|meta:status:)[A-Za-z0-9_.:-]{1,400}$/.test(event.id || '') ? event.id : null,
+    conversationId };
+}
+
 export class WhatsAppService {
   constructor({ store = null, client = null, aiClient = null, aiMonthlyLimitUsd = 0,
     knowledge = null, enabled = false, phoneNumberId, coexistenceVerified = false, allowlist = [], allowAll = false,
@@ -78,13 +94,19 @@ export class WhatsAppService {
     for (const event of events) {
       try {
         const outcome = await this.processEvent(event, { persisted: event.pending === true });
-        if (event.pending) await this.store.completePendingMessage(event.id, outcome);
+        // A concurrent duplicate must not remove the winning worker's pending inquiry.
+        if (outcome !== 'duplicate') await this.store?.completePendingMessage?.(event.id, outcome);
         outcomes[outcome] = (outcomes[outcome] || 0) + 1;
       } catch (error) {
-        // Only an event still in the initial received state is made retryable.
+        // Only a pre-send received/pending event is made retryable.
         // Once a send is reserved, an ambiguous failure must stay terminal to
         // avoid a duplicate customer-facing message on Kapso redelivery.
-        await this.store?.markProcessingFailed?.(event.id).catch(() => {});
+        let retryable = false;
+        try { retryable = await this.store?.markProcessingFailed?.(event.id) || false; }
+        catch (persistError) {
+          console.error(JSON.stringify(processingDiagnostic(persistError, { ...event, processingStage: 'persist_failure' }, event.processingConversationId)));
+        }
+        console.error(JSON.stringify({ ...processingDiagnostic(error, event, event.processingConversationId), retryable }));
         throw error;
       }
     }
@@ -112,6 +134,8 @@ export class WhatsAppService {
     if (event.phoneId !== this.phoneNumberId) return 'other_phone';
     if (!event.at || event.at > new Date(this.now().getTime() + 5 * 60_000)) return 'invalid_timestamp';
     const conversationId = this.store.conversationId(event.phoneId, event.sender);
+    event.processingConversationId = conversationId;
+    event.processingStage = 'claim_event';
     if (!persisted) {
       const inserted = await this.store.recordEvent({ id: event.id, conversationId, type: 'incoming', at: event.at });
       if (!inserted) return 'duplicate';
@@ -127,6 +151,7 @@ export class WhatsAppService {
       await this.store.setOutcome(event.id, 'allowlist_blocked');
       return 'allowlist_blocked';
     }
+    event.processingStage = 'conversation_state';
     const conversation = await this.store.getConversation(conversationId);
     if (!event.pending && conversation?.last_employee_at && event.at <= new Date(conversation.last_employee_at)) {
       await this.store.setOutcome(event.id, 'before_employee_activity');
@@ -143,9 +168,11 @@ export class WhatsAppService {
         await this.store.setOutcome(event.id, 'silent_no_reply');
         return 'silent_no_reply';
       }
+      event.processingStage = 'queue_pending';
       const queued = await this.store.queuePendingMessage({ ...event, conversationId }, pendingPlan);
       if (queued) {
         if (pendingPlan.requiresHuman) console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'protected', reason: pendingPlan.reason }));
+        event.processingStage = 'handoff_expiry';
         const released = await this.store.claimExpiredHandoffs({ conversationId });
         for (const item of released.filter((value) => value.kind === 'audit')) {
           console.log(JSON.stringify({ service: 'whatsapp-handoff', event: 'timeout', aiResumed: true, pendingInquiry: item.hadPending }));
@@ -164,6 +191,7 @@ export class WhatsAppService {
       // Re-read before deciding whether to continue with this already-recorded event.
       if ((await this.store.getConversation(conversationId))?.human_active) return 'human_active_pending';
     }
+    event.processingStage = 'reply_plan';
     let plan = planWhatsAppReply(event.text, this.now());
     if (plan.silent && ['acknowledgment', 'unsupported_content'].includes(plan.reason)) {
       await this.store.setOutcome(event.id, 'silent_no_reply');
@@ -257,6 +285,7 @@ export class WhatsAppService {
       await this.store.setOutcome(event.id, 'outside_service_window');
       return 'outside_service_window';
     }
+    event.processingStage = 'reserve_outbound';
     if (!await this.store.reserveSend(event.id, conversationId, event.at)) {
       const currentConversation = await this.store.getConversation(conversationId);
       if (currentConversation?.human_active) {
@@ -281,6 +310,7 @@ export class WhatsAppService {
       return 'send_suppressed';
     }
     try {
+      event.processingStage = 'outbound';
       // A reserved send is never automatically retried. A timeout after Meta
       // accepts the request is ambiguous and retrying could duplicate a reply.
       if (sendsMenuDocument) {

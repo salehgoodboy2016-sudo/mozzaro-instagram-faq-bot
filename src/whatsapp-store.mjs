@@ -32,20 +32,38 @@ export class WhatsAppStore {
     // persisted the event and then failed before reserving any outbound send.
     // Reclaim only that explicitly retryable state; terminal and send-reserved
     // outcomes remain immutable so a retry can never duplicate a reply.
-    const reclaimed = await this.pool.query(`UPDATE whatsapp_events SET
-      outcome='received',updated_at=now() WHERE event_id=$1 AND outcome='processing_failed'
-      RETURNING event_id`, [id]);
+    const reclaimed = await this.pool.query(`WITH reclaimed AS (
+      UPDATE whatsapp_events SET outcome='received',updated_at=now()
+      WHERE event_id=$1 AND outcome='processing_failed' RETURNING event_id,conversation_id
+    ), audited AS (
+      INSERT INTO whatsapp_processing_audit(event_id,conversation_id,from_outcome,to_outcome)
+      SELECT event_id,conversation_id,'processing_failed','received' FROM reclaimed
+    ) SELECT event_id FROM reclaimed`, [id]);
     return reclaimed.rowCount === 1;
   }
 
   async markProcessingFailed(id) {
-    const result = await this.pool.query(`UPDATE whatsapp_events SET
-      outcome='processing_failed',updated_at=now() WHERE event_id=$1 AND outcome='received'
-      RETURNING event_id`, [id]);
+    // Only pre-send states can be reopened. A reservation is deliberately
+    // terminal even if the provider result or the subsequent DB write is unknown.
+    const result = await this.pool.query(`WITH failed AS (
+      UPDATE whatsapp_events SET outcome='processing_failed',updated_at=now()
+      WHERE event_id=$1 AND outcome IN ('received','human_active_pending')
+      RETURNING event_id,conversation_id
+    ), pending AS (
+      UPDATE whatsapp_pending_messages SET status='pending',claimed_at=NULL
+      WHERE event_id IN (SELECT event_id FROM failed)
+    ), audited AS (
+      INSERT INTO whatsapp_processing_audit(event_id,conversation_id,from_outcome,to_outcome)
+      SELECT event_id,conversation_id,'pre_send','processing_failed' FROM failed
+    ) SELECT event_id FROM failed`, [id]);
     return result.rowCount === 1;
   }
 
   async setOutcome(id, outcome) {
+    if (outcome === 'send_suppressed') {
+      await this.pool.query("UPDATE whatsapp_events SET outcome=$2,updated_at=now() WHERE event_id=$1 AND outcome='received'", [id, outcome]);
+      return;
+    }
     await this.pool.query('UPDATE whatsapp_events SET outcome=$2, updated_at=now() WHERE event_id=$1', [id, outcome]);
   }
 
@@ -175,6 +193,10 @@ export class WhatsAppStore {
       const conversation = await client.query(
         'SELECT human_active FROM whatsapp_conversations WHERE conversation_id=$1 FOR UPDATE', [event.conversationId]);
       if (!conversation.rows[0]?.human_active) { await client.query('ROLLBACK'); return false; }
+      const eventState = await client.query('SELECT outcome FROM whatsapp_events WHERE event_id=$1 FOR UPDATE', [event.id]);
+      if (!eventState.rowCount || !['received','human_active_pending'].includes(eventState.rows[0].outcome)) {
+        await client.query('ROLLBACK'); return false;
+      }
       const protectedHandoff = plan.requiresHuman === true;
       const previous = await client.query('SELECT event_id FROM whatsapp_pending_messages WHERE conversation_id=$1', [event.conversationId]);
       if (previous.rowCount && previous.rows[0].event_id !== event.id) {
@@ -204,17 +226,26 @@ export class WhatsAppStore {
     const filter = conversationId ? 'AND c.conversation_id=$1' : '';
     const values = conversationId ? [conversationId, limit] : [limit];
     const limitParam = conversationId ? '$2' : '$1';
-    const due = await this.pool.query(`SELECT DISTINCT c.conversation_id FROM whatsapp_conversations c
+    const due = await this.pool.query(`SELECT c.conversation_id FROM whatsapp_conversations c
       LEFT JOIN whatsapp_pending_messages p ON p.conversation_id=c.conversation_id
       WHERE ((c.human_active=true AND c.handoff_protected=false AND c.handoff_reason='employee_activity'
         AND c.handoff_expires_at <= now()) OR (c.human_active=false AND p.status='processing'
         AND p.claimed_at < now()-interval '5 minutes')) ${filter}
-      ORDER BY c.handoff_expires_at LIMIT ${limitParam}`, values);
+      ORDER BY c.handoff_expires_at NULLS LAST,c.conversation_id LIMIT ${limitParam}`, values);
     const claimed = [];
     for (const row of due.rows) {
       const client = await this.pool.connect();
       try {
         await client.query('BEGIN');
+        await client.query('SELECT conversation_id FROM whatsapp_conversations WHERE conversation_id=$1 FOR UPDATE', [row.conversation_id]);
+        // Lock the event before changing a pending claim. Never reopen an
+        // outbound reservation or completed response during stale-claim recovery.
+        const pendingEvent = await client.query(`SELECT event_id,outcome FROM whatsapp_events
+          WHERE event_id IN (SELECT event_id FROM whatsapp_pending_messages WHERE conversation_id=$1)
+          FOR UPDATE`, [row.conversation_id]);
+        if (pendingEvent.rowCount && !['received','human_active_pending','processing_failed'].includes(pendingEvent.rows[0].outcome)) {
+          await client.query('ROLLBACK'); continue;
+        }
         const resumed = await client.query(`UPDATE whatsapp_conversations SET human_active=false,
           handoff_reason=NULL,handoff_expires_at=NULL,updated_at=now()
           WHERE conversation_id=$1 AND human_active=true AND handoff_protected=false
