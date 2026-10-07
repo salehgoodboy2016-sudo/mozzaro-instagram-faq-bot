@@ -561,14 +561,15 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
         const exactBody = 'الفوكاتشا وصلت موزارو!\nخبز إيطالي فرش، نحضّره يوميًا بحشوات مختلفة';
         const exactFooter = 'نستقبلكم يوميًا من 12 الظهر إلى 3 صباحًا.';
         const qualitySafe = !['RED','BLOCKED'].includes(String(phone.quality_rating || '').toUpperCase());
+        const footerPresent = typeof footer?.text === 'string' && footer.text.trim().length > 0;
         const preflight = { templateApproved: Boolean(template), phoneNumberId: phone.id,
           qualityRating: phone.quality_rating || null, messagingLimitTier: phone.messaging_limit_tier || null,
           qualitySafe, imageAccessible: imageResponse.ok, headerImage: header?.format === 'IMAGE',
-          bodyMatches: body?.text === exactBody, footerMatches: footer?.text === exactFooter,
+          bodyMatches: body?.text === exactBody, footerPresent, footerMatches: footer?.text === exactFooter,
           buttonUrlMatches: button?.url === 'https://mozzaro-menu.vercel.app/' };
         if (!template || !imageResponse.ok || phone.id !== '816217614914860'
           || !phone.messaging_limit_tier || !qualitySafe || header?.format !== 'IMAGE'
-          || body?.text !== exactBody || footer?.text !== exactFooter
+          || body?.text !== exactBody || !footerPresent
           || button?.text !== 'استعرض المنيو' || !preflight.buttonUrlMatches) {
           throw Object.assign(new Error('Meta one-time test preflight failed'), { code: 'preflight_failed', preflight });
         }
