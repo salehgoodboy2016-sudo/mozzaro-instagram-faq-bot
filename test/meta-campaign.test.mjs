@@ -90,7 +90,8 @@ test('Meta Direct audits granted scopes and subscribed apps without sending', as
           { permission: 'whatsapp_business_messaging', status: 'granted' },
           { permission: 'whatsapp_business_management', status: 'granted' },
         ] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-        : new Response(JSON.stringify({ data: [{ id: '1637843331181155', name: 'Mozzaro Customer Manager' }] }),
+        : new Response(JSON.stringify({ data: [{ whatsapp_business_api_data:
+          { id: '1637843331181155', name: 'Mozzaro Customer Manager' } }] }),
           { status: 200, headers: { 'Content-Type': 'application/json' } });
     } });
   assert.deepEqual(await client.getGrantedPermissions(),

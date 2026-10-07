@@ -95,7 +95,8 @@ export class MetaCampaignClient {
       const error = new Error('Meta subscription check failed');
       error.status = response.status; error.code = body.error?.code ?? null; throw error;
     }
-    return body.data.map((item) => ({ id: String(item.id || ''), name: String(item.name || '') }));
+    return body.data.map((item) => item.whatsapp_business_api_data || item)
+      .map((item) => ({ id: String(item.id || ''), name: String(item.name || '') }));
   }
 
   async sendTemplate({ to, templateName, language = 'ar', image }) {
